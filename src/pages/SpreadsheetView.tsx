@@ -585,23 +585,29 @@ const SpreadsheetView = () => {
 
           {/* Spreadsheet grid */}
           <div className="flex-1 overflow-auto">
-            <SpreadsheetGrid
-              sheet={activeSheet}
-              selection={selection}
-              onSelectionChange={setSelection}
-              onCellUpdate={updateCell}
-              onColumnHeaderUpdate={updateColumnHeader}
-              onAddColumn={addNewColumn}
-              onAddRow={addNewRow}
-              onClearSelectedCells={clearSelectedCells}
-              rowCount={rowCount}
-              columnWidths={columnWidths}
-              rowHeights={rowHeights}
-              onColumnResize={updateColumnWidth}
-              onRowResize={updateRowHeight}
-              getColumnWidth={getColumnWidth}
-              getRowHeight={getRowHeight}
-            />
+            {activeSheet ? (
+              <SpreadsheetGrid
+                sheet={activeSheet}
+                selection={selection}
+                onSelectionChange={setSelection}
+                onCellUpdate={updateCell}
+                onColumnHeaderUpdate={updateColumnHeader}
+                onAddColumn={addNewColumn}
+                onAddRow={addNewRow}
+                onClearSelectedCells={clearSelectedCells}
+                rowCount={rowCount}
+                columnWidths={columnWidths}
+                rowHeights={rowHeights}
+                onColumnResize={updateColumnWidth}
+                onRowResize={updateRowHeight}
+                getColumnWidth={getColumnWidth}
+                getRowHeight={getRowHeight}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                Loading sheet data...
+              </div>
+            )}
           </div>
         </div>
 
