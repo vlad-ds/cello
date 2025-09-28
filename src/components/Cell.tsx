@@ -61,8 +61,8 @@ export const Cell = ({
   };
 
   const cellClassName = cn(
-    "border-r border-b border-grid-border flex items-center px-2 text-sm select-none cursor-cell",
-    isHeader && "bg-grid-header text-grid-header-foreground font-medium cursor-text",
+    "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell",
+    isHeader && "bg-grid-header text-grid-header-foreground font-medium cursor-text items-center",
     !isHeader && "bg-grid hover:bg-grid-hover",
     isSelected && !isHeader && "bg-grid-selected border-grid-selected-border border-2 z-10",
     className
@@ -94,7 +94,10 @@ export const Cell = ({
       onDoubleClick={onDoubleClick}
       onClick={onClick}
     >
-      <span className="truncate w-full">
+      <span className={cn(
+        "w-full leading-tight",
+        isHeader ? "truncate" : "break-words"
+      )}>
         {value || (isHeader ? "" : "")}
       </span>
     </div>
