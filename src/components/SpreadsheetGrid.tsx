@@ -50,17 +50,22 @@ export const SpreadsheetGrid = ({
   };
 
   const handleHeaderEdit = (colIndex: number, value: string) => {
+    console.log("Header edit:", colIndex, value);
     onColumnHeaderUpdate(colIndex, value);
     setEditingHeader(null);
   };
 
   const handleHeaderDoubleClick = (colIndex: number) => {
+    console.log("Header double click:", colIndex);
     setEditingHeader(colIndex);
   };
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (editingCell || editingHeader) return;
+    // Don't interfere if someone is editing a sheet name
+    if (editingHeader || document.querySelector('input:focus')) return;
+    
+    if (editingCell) return;
 
     const { start } = selection;
     let newRow = start.row;

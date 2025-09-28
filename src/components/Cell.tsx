@@ -49,6 +49,10 @@ export const Cell = ({
     } else if (e.key === "Escape") {
       setEditValue(value);
       onEdit?.(value);
+    } else if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      // Exit editing mode when arrow keys are pressed
+      e.preventDefault();
+      handleSubmit();
     }
   };
 
@@ -70,6 +74,8 @@ export const Cell = ({
           onBlur={handleSubmit}
           onKeyDown={handleKeyDown}
           className="w-full h-full bg-transparent outline-none border-none text-sm"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
         />
       </div>
     );

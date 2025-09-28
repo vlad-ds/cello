@@ -71,6 +71,8 @@ export const SheetTabs = ({
                 className="w-full px-3 py-2 bg-transparent text-sm font-medium outline-none border border-grid-selected-border rounded-md"
                 autoFocus
                 onFocus={(e) => e.target.select()}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
               />
             ) : (
               <button
