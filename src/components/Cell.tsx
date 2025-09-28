@@ -57,7 +57,7 @@ export const Cell = ({
       e.preventDefault();
       handleSubmit();
       // Move to next row after editing if we have access to selection
-      if (onSelectionChange && selection && ROWS) {
+      if (!isHeader && onSelectionChange && selection && ROWS) {
         setTimeout(() => {
           const currentRow = selection.start.row;
           const currentCol = selection.start.col;

@@ -46,29 +46,42 @@ serve(async (req) => {
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
 
-      case 'update_cell':
-        // First ensure table exists
+      case 'update_cell': {
         const columnName = `column_${col + 1}`;
-        
-        // Try to insert or update the row
-        const upsertQuery = `
-          INSERT INTO ${tableName} (row_number, ${columnName})
-          VALUES (${row + 1}, '${value.replace(/'/g, "''")}')
-          ON CONFLICT (row_number)
-          DO UPDATE SET ${columnName} = '${value.replace(/'/g, "''")}'
-        `;
-        
-        const { error: upsertError } = await supabase.rpc('execute_sql', { 
-          query: upsertQuery 
-        });
-        
-        if (upsertError) throw upsertError;
-        
-        console.log(`Updated cell ${columnName} in row ${row + 1} of ${tableName}`);
+        const targetRow = Number(row);
+
+        if (!Number.isInteger(targetRow) || targetRow < 0) {
+          throw new Error('Row must be a non-negative integer.');
+        }
+
+        const sanitizedValue = typeof value === 'string' ? value.replace(/'/g, "''") : '';
+
+        if (sanitizedValue.length === 0) {
+          const clearQuery = `
+            UPDATE ${tableName}
+            SET ${columnName} = NULL
+            WHERE row_number = ${targetRow};
+          `;
+
+          const { error: clearError } = await supabase.rpc('execute_sql', { query: clearQuery });
+          if (clearError) throw clearError;
+        } else {
+          const upsertQuery = `
+            INSERT INTO ${tableName} (row_number, ${columnName})
+            VALUES (${targetRow}, '${sanitizedValue}')
+            ON CONFLICT (row_number)
+            DO UPDATE SET ${columnName} = '${sanitizedValue}'
+          `;
+
+          const { error: upsertError } = await supabase.rpc('execute_sql', { query: upsertQuery });
+          if (upsertError) throw upsertError;
+        }
+
         return new Response(
           JSON.stringify({ success: true }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
+      }
 
       case 'load_data':
         // Load all data from the sheet table
@@ -86,9 +99,45 @@ serve(async (req) => {
           );
         }
         
+        const rows = tableData || [];
+        const columnNames = rows.length > 0
+          ? Object.keys(rows[0]).filter((key) => key.startsWith('column_')).sort()
+          : [];
+
+        if (columnNames.length === 0) {
+          return new Response(
+            JSON.stringify({ data: [] }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const headerSource = rows.find((row) => row.row_number === 1) || {};
+        const headerRow: Record<string, unknown> = { row_number: 0 };
+        columnNames.forEach((columnName, index) => {
+          headerRow[`column_${index + 1}`] = headerSource[columnName] ?? `COLUMN_${index + 1}`;
+        });
+
+        const dataRows = rows
+          .filter((row) => row.row_number !== 1)
+          .map((row) => {
+            const record: Record<string, unknown> = {
+              row_number: (row.row_number ?? 0) - 1,
+            };
+            columnNames.forEach((columnName, index) => {
+              record[`column_${index + 1}`] = row[columnName];
+            });
+            return record;
+          });
+
         return new Response(
-          JSON.stringify({ data: tableData || [] }),
+          JSON.stringify({ data: [headerRow, ...dataRows] }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+
+      case 'delete_column':
+        return new Response(
+          JSON.stringify({ error: 'Column removal is only available via the local SQLite backend.' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
         );
 
       default:

@@ -5,18 +5,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Plus, Folder, Calendar } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { dataClient, type SpreadsheetRecord } from "@/integrations/database";
 import { useNavigate } from "react-router-dom";
 
-interface Spreadsheet {
-  id: string;
-  name: string;
-  created_at: string;
-  updated_at: string;
-}
-
 const SpreadsheetsList = () => {
-  const [spreadsheets, setSpreadsheets] = useState<Spreadsheet[]>([]);
+  const [spreadsheets, setSpreadsheets] = useState<SpreadsheetRecord[]>([]);
   const [newSpreadsheetName, setNewSpreadsheetName] = useState("");
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -28,13 +21,8 @@ const SpreadsheetsList = () => {
 
   const fetchSpreadsheets = async () => {
     try {
-      const { data, error } = await supabase
-        .from('spreadsheets')
-        .select('*')
-        .order('updated_at', { ascending: false });
-
-      if (error) throw error;
-      setSpreadsheets(data || []);
+      const data = await dataClient.listSpreadsheets();
+      setSpreadsheets(data);
     } catch (error) {
       console.error('Error fetching spreadsheets:', error);
     } finally {
@@ -46,24 +34,8 @@ const SpreadsheetsList = () => {
     if (!newSpreadsheetName.trim()) return;
 
     try {
-      // Create spreadsheet
-      const { data: spreadsheet, error: spreadsheetError } = await supabase
-        .from('spreadsheets')
-        .insert([{ name: newSpreadsheetName.trim() }])
-        .select()
-        .single();
-
-      if (spreadsheetError) throw spreadsheetError;
-
-      // Create default sheet
-      const { error: sheetError } = await supabase
-        .from('sheets')
-        .insert([{ 
-          spreadsheet_id: spreadsheet.id, 
-          name: 'Sheet 1' 
-        }]);
-
-      if (sheetError) throw sheetError;
+      const spreadsheet = await dataClient.createSpreadsheet(newSpreadsheetName.trim());
+      await dataClient.createSheet(spreadsheet.id, 'Sheet 1');
 
       setNewSpreadsheetName("");
       setIsCreateDialogOpen(false);

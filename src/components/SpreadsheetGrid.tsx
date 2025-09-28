@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Plus } from "lucide-react";
+import { Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Cell } from "./Cell";
 import { SheetData, CellSelection } from "@/pages/Index";
@@ -11,6 +11,7 @@ interface SpreadsheetGridProps {
   onCellUpdate: (row: number, col: number, value: string) => void;
   onColumnHeaderUpdate: (colIndex: number, newName: string) => void;
   onAddColumn: () => void;
+  onRemoveColumn: (colIndex: number) => void;
   onAddRow: () => void;
   onClearSelectedCells: () => void;
   rowCount: number;
@@ -29,6 +30,7 @@ export const SpreadsheetGrid = ({
   onCellUpdate,
   onColumnHeaderUpdate,
   onAddColumn,
+  onRemoveColumn,
   onAddRow,
   onClearSelectedCells,
   rowCount,
@@ -338,7 +340,7 @@ export const SpreadsheetGrid = ({
           
           {/* Column Headers */}
           {sheet.columnHeaders.map((header, colIndex) => (
-            <div key={`header-container-${colIndex}`} className="relative flex">
+            <div key={`header-container-${colIndex}`} className="relative flex group/col">
               <Cell
                 key={`header-${colIndex}`}
                 value={header}
@@ -361,6 +363,18 @@ export const SpreadsheetGrid = ({
                 className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-primary/50 transition-colors z-10"
                 onMouseDown={(e) => handleColumnResizeStart(colIndex, e)}
               />
+              {sheet.columnHeaders.length > 1 && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemoveColumn(colIndex);
+                  }}
+                  className="absolute top-1 right-2 hidden group-hover/col:flex items-center justify-center w-5 h-5 rounded-full bg-background border border-border/70 text-muted-foreground hover:text-destructive hover:border-destructive transition"
+                  aria-label="Remove column"
+                >
+                  <Minus className="w-3 h-3" />
+                </button>
+              )}
             </div>
           ))}
           

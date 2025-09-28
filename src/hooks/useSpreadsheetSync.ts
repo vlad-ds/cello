@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { dataClient } from '@/integrations/database';
 
 export const useSpreadsheetSync = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -7,16 +7,7 @@ export const useSpreadsheetSync = () => {
   const createDynamicTable = useCallback(async (sheetId: string, columnCount: number) => {
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('manage-sheet-data', {
-        body: {
-          action: 'create_table',
-          sheetId,
-          columnCount
-        }
-      });
-
-      if (error) throw error;
-      return data;
+      await dataClient.createDynamicTable(sheetId, columnCount);
     } catch (error) {
       console.error('Error creating dynamic table:', error);
       throw error;
@@ -28,18 +19,7 @@ export const useSpreadsheetSync = () => {
   const syncCell = useCallback(async (sheetId: string, row: number, col: number, value: string) => {
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('manage-sheet-data', {
-        body: {
-          action: 'update_cell',
-          sheetId,
-          row,
-          col,
-          value
-        }
-      });
-
-      if (error) throw error;
-      return data;
+      await dataClient.syncCell(sheetId, row, col, value);
     } catch (error) {
       console.error('Error syncing cell:', error);
       throw error;
@@ -51,15 +31,7 @@ export const useSpreadsheetSync = () => {
   const loadSheetData = useCallback(async (sheetId: string) => {
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('manage-sheet-data', {
-        body: {
-          action: 'load_data',
-          sheetId
-        }
-      });
-
-      if (error) throw error;
-      return data;
+      return await dataClient.loadSheetData(sheetId);
     } catch (error) {
       console.error('Error loading sheet data:', error);
       throw error;

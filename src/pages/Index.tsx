@@ -253,6 +253,71 @@ const Index = () => {
     ));
   };
 
+  const removeColumn = (colIndex: number) => {
+    if (activeSheet.columnHeaders.length <= 1) return;
+
+    setSheets(prev => prev.map(sheet => {
+      if (sheet.id !== activeSheetId) return sheet;
+
+      const newHeaders = sheet.columnHeaders.filter((_, index) => index !== colIndex);
+      const newCells: CellData = {};
+
+      Object.entries(sheet.cells).forEach(([key, value]) => {
+        const [rowStr, colStr] = key.split('-');
+        const row = Number(rowStr);
+        const col = Number(colStr);
+
+        if (Number.isNaN(row) || Number.isNaN(col)) return;
+
+        if (col < colIndex) {
+          newCells[key] = value;
+        } else if (col > colIndex) {
+          newCells[`${row}-${col - 1}`] = value;
+        }
+      });
+
+      return {
+        ...sheet,
+        columnHeaders: newHeaders,
+        cells: newCells,
+      };
+    }));
+
+    setColumnWidths(prev => {
+      const next: { [key: string]: number } = {};
+      Object.entries(prev).forEach(([key, width]) => {
+        const [sheetId, colStr] = key.split('-');
+        if (sheetId !== activeSheetId) {
+          next[key] = width;
+          return;
+        }
+        const col = Number(colStr);
+        if (Number.isNaN(col)) return;
+        if (col < colIndex) {
+          next[key] = width;
+        } else if (col > colIndex) {
+          next[`${sheetId}-${col - 1}`] = width;
+        }
+      });
+      return next;
+    });
+
+    setSelection(prev => {
+      const newColumnCount = activeSheet.columnHeaders.length - 1;
+      const adjustColumn = (col: number) => {
+        if (col > colIndex) return Math.max(0, col - 1);
+        if (col >= newColumnCount) return Math.max(0, newColumnCount - 1);
+        return Math.max(0, col);
+      };
+
+      return {
+        start: { row: prev.start.row, col: adjustColumn(prev.start.col) },
+        end: { row: prev.end.row, col: adjustColumn(prev.end.col) },
+        type: prev.type,
+      };
+    });
+  };
+
   const addNewRow = () => {
     addToHistory({
       type: 'add_row',
@@ -445,6 +510,7 @@ const Index = () => {
               onCellUpdate={updateCell}
               onColumnHeaderUpdate={updateColumnHeader}
               onAddColumn={addNewColumn}
+              onRemoveColumn={removeColumn}
               onAddRow={addNewRow}
               onClearSelectedCells={clearSelectedCells}
               rowCount={rowCount}

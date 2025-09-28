@@ -36,6 +36,22 @@ npm i
 npm run dev
 ```
 
+## Backend configuration
+
+By default the app talks to a local SQLite database exposed through a lightweight Node API.
+
+1. Start the API: `npm run server` (or `npm run server:watch` for automatic restarts when files or `.env` change). It listens on `http://localhost:4000` by default.
+2. In another terminal, run the UI: `npm run dev`.
+
+To point the UI at a different API origin, set `VITE_SQLITE_API_URL` in `.env`.
+
+If you want to use Supabase (and regain AI chat), set `VITE_USE_SUPABASE=true` instead and skip the local server.
+
+Each sheet is materialized as its own SQLite table (`sheet_<sheet_id>`). Column names track the spreadsheet headers, so SQL (and the AI agent) can reference meaningful column identifiers like `revenue` instead of generic column numbers.
+
+- Columns can be removed from the UI, which maps to dropping the corresponding column from the sheet table. (This capability is only available while using the local SQLite backend.)
+- To enable the local Gemini-powered assistant, add `GEMINI_API_KEY=<your key>` to `.env` and restart `npm run server`. The UI will call the local API, which proxies requests to Gemini Flash.
+
 **Edit a file directly in GitHub**
 
 - Navigate to the desired file(s).

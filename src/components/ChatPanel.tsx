@@ -1,35 +1,150 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Sparkles } from "lucide-react";
+import { Send, Bot, User, Sparkles, Info, Database, ChevronDown, Hammer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { supabase } from "@/integrations/supabase/client";
+import { backendConfig } from "@/config/backend";
+import { dataClient, isSupabaseBackend } from "@/integrations/database";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+import { toast } from "@/components/ui/sonner";
+import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  contextRange?: string | null;
+  toolCalls?: ToolCall[] | null;
+}
+
+interface ToolCall {
+  name?: string;
+  sheetId?: string;
+  sheetName?: string;
+  sql?: string;
+  status?: "ok" | "error";
+  rowCount?: number;
+  truncated?: boolean;
+  columns?: string[];
+  error?: string;
+  kind?: "read" | "write";
+  operation?: "select" | "update" | "insert" | "alter";
+  changes?: number;
+  lastInsertRowid?: number | string;
+  addedColumns?: {
+    header: string;
+    sqlName: string;
+    columnIndex: number;
+  }[];
 }
 
 interface ChatPanelProps {
   onCommand?: (command: string) => void;
+  onAssistantToolCalls?: (toolCalls: ToolCall[] | null | undefined) => void;
   selectedCells?: { [key: string]: string };
+  spreadsheetId?: string;
 }
 
-export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      content: "Hi! I'm your spreadsheet AI assistant. I can help you work with your data, create formulas, analyze trends, and more. Try asking me something like 'Sum column A' or 'What's the average of row 1'?",
-      timestamp: new Date()
-    }
-  ]);
+const getRangeValue = (selectedCells?: { [key: string]: string }) => {
+  if (!selectedCells || Object.keys(selectedCells).length === 0) return null;
+  const cells = Object.keys(selectedCells)
+    .map((key) => key.toUpperCase())
+    .sort();
+  if (cells.length === 0) return null;
+
+  const first = cells[0];
+  const last = cells[cells.length - 1];
+  if (first === last) {
+    return first;
+  }
+  return `${first}:${last}`;
+};
+
+const formatRangeDisplay = (value?: string | null) => {
+  if (!value) return null;
+  if (value.includes(':')) {
+    return `Agent read range ${value}`;
+  }
+  return `Agent read cell ${value}`;
+};
+
+const renderMarkdown = (content: string) => {
+  const parsed = marked.parse(content, { breaks: true });
+  const html = typeof parsed === 'string' ? parsed : '';
+  return DOMPurify.sanitize(html);
+};
+
+const welcomeMessage: Message = {
+  id: "welcome",
+  role: "assistant",
+  content:
+    "Hi! I'm your spreadsheet AI assistant. I can help you work with your data, create formulas, analyze trends, and more. Try asking me something like 'Sum column A' or 'What's the average of row 1'?",
+  timestamp: new Date(),
+  contextRange: null,
+  toolCalls: null,
+};
+
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId }: ChatPanelProps) => {
+  const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isSupabaseBackend) {
+      setMessages([welcomeMessage]);
+      return;
+    }
+
+    if (!spreadsheetId) {
+      setMessages([welcomeMessage]);
+      return;
+    }
+
+    let isMounted = true;
+    setIsLoadingHistory(true);
+    dataClient
+      .getChatMessages(spreadsheetId)
+      .then((history) => {
+        if (!isMounted) return;
+        if (history.length === 0) {
+          setMessages([welcomeMessage]);
+        } else {
+          setMessages(
+            history.map((message) => ({
+              id: message.id,
+              role: message.role,
+              content: message.content,
+              timestamp: new Date(message.created_at),
+              contextRange: message.context_range ?? null,
+              toolCalls: message.tool_calls ?? null,
+            }))
+          );
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load chat history', error);
+        if (isMounted) {
+          setMessages([welcomeMessage]);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoadingHistory(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [spreadsheetId, isSupabaseBackend]);
 
   const scrollToBottom = () => {
     if (scrollAreaRef.current) {
@@ -47,53 +162,153 @@ export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
   const handleSendMessage = async () => {
     if (!input.trim()) return;
 
+    const trimmed = input.trim();
+    const rangeValue = getRangeValue(selectedCells);
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: input.trim(),
-      timestamp: new Date()
+      content: trimmed,
+      timestamp: new Date(),
+      contextRange: rangeValue,
+      toolCalls: null,
     };
 
     setMessages(prev => [...prev, userMessage]);
     setInput("");
     setIsTyping(true);
 
-    // Call Gemini AI through Supabase edge function
-    try {
-      const { data, error } = await supabase.functions.invoke('gemini-chat', {
-        body: { 
-          query: input.trim(),
-          selectedCells: selectedCells || {}
+    if (!isSupabaseBackend) {
+      if (!spreadsheetId) {
+        const warningMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: 'Open a spreadsheet to start a saved conversation.',
+          timestamp: new Date(),
+          contextRange: null,
+          toolCalls: null,
+        };
+        setMessages(prev => [...prev, warningMessage]);
+      } else {
+        try {
+          const response = await dataClient.sendChatMessage(spreadsheetId, {
+            query: trimmed,
+            selectedCells: selectedCells || {},
+          });
+
+          const updatedMessages = response.messages ?? [];
+          if (updatedMessages.length === 0) {
+            setMessages([welcomeMessage]);
+          } else {
+            setMessages(
+              updatedMessages.map((message) => ({
+                id: message.id,
+                role: message.role,
+                content: message.content,
+                timestamp: new Date(message.created_at),
+                contextRange: message.context_range ?? null,
+                toolCalls: message.tool_calls ?? null,
+              }))
+            );
+          }
+
+          const lastAssistant = [...updatedMessages]
+            .reverse()
+            .find((message) => message.role === 'assistant');
+          if (lastAssistant) {
+            onAssistantToolCalls?.(lastAssistant.tool_calls ?? null);
+          }
+        } catch (error) {
+          console.error('Error saving Gemini conversation:', error);
+          const errorMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content:
+              error instanceof Error
+                ? error.message
+                : 'Sorry, I encountered an error processing your request.',
+            timestamp: new Date(),
+            contextRange: null,
+            toolCalls: null,
+          };
+          setMessages(prev => [...prev, errorMessage]);
+          onAssistantToolCalls?.(null);
         }
-      });
-
-      if (error) {
-        throw error;
       }
+    } else {
+      // Call Gemini AI through Supabase edge function
+      try {
+        const { data, error } = await supabase.functions.invoke('gemini-chat', {
+          body: { 
+            query: trimmed,
+            selectedCells: selectedCells || {}
+          }
+        });
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: data.response || "I'm sorry, I couldn't process your request.",
-        timestamp: new Date()
-      };
+        if (error) {
+          throw error;
+        }
 
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (error) {
-      console.error('Error calling Gemini AI:', error);
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "Sorry, I encountered an error processing your request. Please try again.",
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+        const assistantMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: data.response || "I'm sorry, I couldn't process your request.",
+          timestamp: new Date(),
+          contextRange: rangeValue,
+          toolCalls: null,
+        };
+
+        setMessages(prev => [...prev, assistantMessage]);
+        onAssistantToolCalls?.(null);
+      } catch (error) {
+        console.error('Error calling Gemini AI:', error);
+        const errorMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: "Sorry, I encountered an error processing your request. Please try again.",
+          timestamp: new Date(),
+          contextRange: null,
+          toolCalls: null,
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        onAssistantToolCalls?.(null);
+      }
     }
     
     setIsTyping(false);
 
     // Trigger command callback if provided
-    onCommand?.(input.trim());
+    onCommand?.(trimmed);
+  };
+
+  const handleClearConversation = async () => {
+    if (isSupabaseBackend) {
+      toast('Clearing conversations is only available when using the local SQLite backend.');
+      return;
+    }
+
+    if (!spreadsheetId) {
+      toast('Open a spreadsheet to clear its conversation.');
+      return;
+    }
+
+    const confirmed = window.confirm('Clear the assistant conversation for this spreadsheet?');
+    if (!confirmed) return;
+
+    setIsClearing(true);
+    try {
+      await dataClient.clearChat(spreadsheetId);
+      setMessages([welcomeMessage]);
+      toast('Conversation cleared.');
+    } catch (error) {
+      console.error('Failed to clear conversation', error);
+      toast(
+        error instanceof Error
+          ? error.message
+          : 'Unable to clear the conversation. Please try again.'
+      );
+    } finally {
+      setIsClearing(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -111,14 +326,24 @@ export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
     <div className="flex flex-col h-full bg-card">
       {/* Header */}
       <div className="p-4 border-b border-border bg-gradient-to-r from-primary/5 to-accent/5">
-        <div className="flex items-center gap-2">
-          <div className="p-2 bg-primary/10 rounded-lg">
-            <Sparkles className="w-5 h-5 text-primary" />
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-primary/10 rounded-lg">
+              <Sparkles className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-foreground">AI Assistant</h3>
+              <p className="text-sm text-muted-foreground">Spreadsheet helper</p>
+            </div>
           </div>
-          <div>
-            <h3 className="font-semibold text-foreground">AI Assistant</h3>
-            <p className="text-sm text-muted-foreground">Spreadsheet helper</p>
-          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleClearConversation}
+            disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
+          >
+            Clear Chat
+          </Button>
         </div>
       </div>
 
@@ -151,7 +376,124 @@ export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-foreground"
                   }`}>
-                    <p className="text-sm leading-relaxed">{message.content}</p>
+                    {message.role === 'assistant' ? (
+                      <div
+                        className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none"
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+                      />
+                    ) : (
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+                    )}
+                    {message.contextRange && message.role === 'assistant' && (
+                      <p className="text-xs italic text-muted-foreground mt-2 flex items-center gap-1">
+                        <Info className="w-3 h-3" />
+                        {formatRangeDisplay(message.contextRange)}
+                      </p>
+                    )}
+                    {message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0 && (
+                      <div className="mt-3 space-y-3">
+                        {message.toolCalls.map((toolCall, index) => {
+                          const sqlMarkdown = toolCall.sql
+                            ? '```sql\n' + toolCall.sql.trim() + '\n```'
+                            : '_No SQL provided._';
+                          const isMutation = toolCall.kind === 'write';
+                          const hasRowInfo = !isMutation && (typeof toolCall.rowCount === 'number' || toolCall.truncated);
+                          const displayedColumns = toolCall.columns ? toolCall.columns.slice(0, 6) : [];
+                          const remainingColumns = toolCall.columns && toolCall.columns.length > displayedColumns.length
+                            ? toolCall.columns.length - displayedColumns.length
+                            : 0;
+                          const Icon = isMutation ? Hammer : Database;
+                          const badgeVariant = toolCall.status === 'error' ? 'destructive' : isMutation ? 'default' : 'secondary';
+                          const badgeLabel = toolCall.status === 'error' ? 'Error' : isMutation ? 'Mutation' : 'Query';
+                          const statusLabel = toolCall.status === 'error'
+                            ? isMutation
+                              ? 'SQL mutation error'
+                              : 'SQL tool error'
+                            : isMutation
+                            ? 'SQL mutation executed'
+                            : 'SQL query executed';
+                          const addedColumns = toolCall.addedColumns ?? [];
+
+                          return (
+                            <div
+                              key={`${toolCall.name ?? 'sql-tool'}-${index}`}
+                              className={`rounded-md border border-border/70 p-3 text-sm ${
+                                isMutation ? 'bg-primary/5' : 'bg-background/70'
+                              }`}
+                            >
+                              <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                                <Icon className="h-4 w-4" />
+                                <span>
+                                  {statusLabel}
+                                  {toolCall.sheetName
+                                    ? ` on ${toolCall.sheetName}`
+                                    : toolCall.sheetId
+                                    ? ` on ${toolCall.sheetId}`
+                                    : ''}
+                                </span>
+                                <Badge variant={badgeVariant}>{badgeLabel}</Badge>
+                              </div>
+
+                              {hasRowInfo && toolCall.status !== 'error' && (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                  Rows returned: {toolCall.rowCount ?? 0}
+                                  {toolCall.truncated ? '+' : ''}
+                                  {displayedColumns.length > 0 && (
+                                    <span>
+                                      {' '}
+                                      • Columns: {displayedColumns.join(', ')}
+                                      {remainingColumns > 0 ? `, +${remainingColumns} more` : ''}
+                                    </span>
+                                  )}
+                                </p>
+                              )}
+
+                              {isMutation && toolCall.status !== 'error' && (
+                                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                                  {typeof toolCall.operation === 'string' && toolCall.operation.length > 0 && (
+                                    <p>
+                                      Operation: {toolCall.operation.charAt(0).toUpperCase() + toolCall.operation.slice(1)}
+                                    </p>
+                                  )}
+                                  {typeof toolCall.changes === 'number' && (
+                                    <p>Rows affected: {toolCall.changes}</p>
+                                  )}
+                                  {toolCall.lastInsertRowid !== undefined && toolCall.lastInsertRowid !== null && (
+                                    <p>Last inserted row id: {toolCall.lastInsertRowid}</p>
+                                  )}
+                                  {addedColumns.length > 0 && (
+                                    <p>
+                                      Added columns: {addedColumns.map((col) => col.header || col.sqlName).join(', ')}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+
+                              {toolCall.error && (
+                                <p className="mt-2 text-xs text-destructive">
+                                  {toolCall.error}
+                                </p>
+                              )}
+
+                              {toolCall.sql && (
+                                <Collapsible className="mt-3">
+                                  <CollapsibleTrigger className="group flex items-center gap-2 text-xs font-medium text-primary hover:text-primary/90">
+                                    <ChevronDown className="h-4 w-4 transition-transform duration-200 group-data-[state=open]:rotate-180" />
+                                    View SQL
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent className="mt-2">
+                                    <div
+                                      className="prose prose-xs max-w-none rounded-md bg-muted/40 p-3 font-mono text-xs dark:prose-invert"
+                                      dangerouslySetInnerHTML={{ __html: renderMarkdown(sqlMarkdown) }}
+                                    />
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground px-1">
                     {formatTime(message.timestamp)}
@@ -190,11 +532,11 @@ export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
             onKeyDown={handleKeyDown}
             placeholder="Ask me about your spreadsheet..."
             className="flex-1"
-            disabled={isTyping}
+            disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
           />
           <Button
             onClick={handleSendMessage}
-            disabled={!input.trim() || isTyping}
+            disabled={!input.trim() || isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
             size="icon"
           >
             <Send className="w-4 h-4" />
@@ -203,6 +545,11 @@ export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
         <p className="text-xs text-muted-foreground mt-2">
           Try: "Sum column A", "Average of row 1", "Create chart from data"
         </p>
+        {!spreadsheetId && !isSupabaseBackend && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Open a spreadsheet to store your chat history.
+          </p>
+        )}
       </div>
     </div>
   );
