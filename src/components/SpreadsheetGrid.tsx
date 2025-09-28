@@ -247,11 +247,8 @@ export const SpreadsheetGrid = ({
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    console.log('Global keydown:', e.key, 'editingHeader:', editingHeader, 'editingCell:', editingCell, 'focused element:', document.activeElement?.tagName);
-    
     // Don't interfere if someone is editing a sheet name
     if (editingHeader !== null || document.querySelector('input:focus, textarea:focus')) {
-      console.log('Ignoring keydown - header editing or input focused');
       return;
     }
     
@@ -294,7 +291,6 @@ export const SpreadsheetGrid = ({
       default:
         // Start editing if a printable character is pressed
         if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-          console.log('Starting cell edit from keypress:', e.key, 'on cell:', start.row, start.col);
           setEditingCell({ row: start.row, col: start.col });
           // The character will be handled by the input field
           return;
