@@ -305,6 +305,20 @@ const Index = () => {
     ));
   };
 
+  const deleteSheet = (sheetId: string) => {
+    if (sheets.length <= 1) return; // Don't allow deleting the last sheet
+    
+    setSheets(prev => prev.filter(sheet => sheet.id !== sheetId));
+    
+    // If we're deleting the active sheet, switch to the first remaining sheet
+    if (activeSheetId === sheetId) {
+      const remainingSheets = sheets.filter(sheet => sheet.id !== sheetId);
+      if (remainingSheets.length > 0) {
+        setActiveSheetId(remainingSheets[0].id);
+      }
+    }
+  };
+
   const handleChatCommand = (command: string) => {
     // This will be implemented when AI backend is connected
     console.log("Chat command:", command);
@@ -390,6 +404,7 @@ const Index = () => {
             onSheetSelect={setActiveSheetId}
             onAddSheet={addNewSheet}
             onSheetRename={renameSheet}
+            onSheetDelete={deleteSheet}
           />
         </div>
 

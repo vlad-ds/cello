@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SheetData } from "@/pages/Index";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ interface SheetTabsProps {
   onSheetSelect: (sheetId: string) => void;
   onAddSheet: () => void;
   onSheetRename: (sheetId: string, newName: string) => void;
+  onSheetDelete: (sheetId: string) => void;
 }
 
 export const SheetTabs = ({
@@ -18,6 +19,7 @@ export const SheetTabs = ({
   onSheetSelect,
   onAddSheet,
   onSheetRename,
+  onSheetDelete,
 }: SheetTabsProps) => {
   const [editingSheetId, setEditingSheetId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -75,13 +77,27 @@ export const SheetTabs = ({
                 onMouseDown={(e) => e.stopPropagation()}
               />
             ) : (
-              <button
-                onClick={() => onSheetSelect(sheet.id)}
-                onDoubleClick={() => handleSheetDoubleClick(sheet)}
-                className="w-full text-left px-3 py-2 text-sm font-medium"
-              >
-                {sheet.name}
-              </button>
+              <div className="flex items-center group">
+                <button
+                  onClick={() => onSheetSelect(sheet.id)}
+                  onDoubleClick={() => handleSheetDoubleClick(sheet)}
+                  className="flex-1 text-left px-3 py-2 text-sm font-medium"
+                >
+                  {sheet.name}
+                </button>
+                {sheets.length > 1 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSheetDelete(sheet.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1 mr-2 hover:bg-destructive/10 hover:text-destructive rounded transition-all duration-200"
+                    title="Delete sheet"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
             )}
           </div>
         ))}

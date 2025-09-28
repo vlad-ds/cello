@@ -183,6 +183,29 @@ export const SpreadsheetGrid = ({
     return row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
   };
 
+  const getSelectionBorderClasses = (row: number, col: number) => {
+    if (!isCellSelected(row, col)) return "";
+    
+    const minRow = Math.min(selection.start.row, selection.end.row);
+    const maxRow = Math.max(selection.start.row, selection.end.row);
+    const minCol = Math.min(selection.start.col, selection.end.col);
+    const maxCol = Math.max(selection.start.col, selection.end.col);
+    
+    // Check if this cell is on the perimeter of the selection
+    const isTopEdge = row === minRow;
+    const isBottomEdge = row === maxRow;
+    const isLeftEdge = col === minCol;
+    const isRightEdge = col === maxCol;
+    
+    let borderClasses = "";
+    if (isTopEdge) borderClasses += " border-t-2 border-t-grid-selected-border";
+    if (isBottomEdge) borderClasses += " border-b-2 border-b-grid-selected-border";
+    if (isLeftEdge) borderClasses += " border-l-2 border-l-grid-selected-border";
+    if (isRightEdge) borderClasses += " border-r-2 border-r-grid-selected-border";
+    
+    return borderClasses;
+  };
+
   const isRowHeaderSelected = (row: number) => {
     if (selection.type !== 'row') return false;
     const minRow = Math.min(selection.start.row, selection.end.row);
@@ -394,6 +417,7 @@ export const SpreadsheetGrid = ({
                 isHeader={false}
                 isSelected={isCellSelected(rowIndex, colIndex)}
                 isEditing={editingCell?.row === rowIndex && editingCell?.col === colIndex}
+                className={getSelectionBorderClasses(rowIndex, colIndex)}
                 style={{ width: getColumnWidth(colIndex), height: getRowHeight(rowIndex) }}
                 onMouseDown={() => handleCellMouseDown(rowIndex, colIndex)}
                 onMouseEnter={() => handleCellMouseEnter(rowIndex, colIndex)}
