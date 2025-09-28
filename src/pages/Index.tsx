@@ -24,7 +24,7 @@ export interface CellSelection {
 }
 
 export interface Action {
-  type: 'cell_update' | 'column_header_update' | 'add_column' | 'add_row';
+  type: 'cell_update' | 'bulk_cell_update' | 'column_header_update' | 'add_column' | 'add_row';
   data: any;
   timestamp: number;
 }
@@ -91,6 +91,24 @@ const Index = () => {
         ));
         break;
         
+      case 'bulk_cell_update':
+        const { cellUpdates } = action.data;
+        setSheets(prev => prev.map(sheet => 
+          sheet.id === activeSheetId 
+            ? {
+                ...sheet,
+                cells: {
+                  ...sheet.cells,
+                  ...cellUpdates.reduce((acc: any, update: any) => {
+                    acc[`${update.row}-${update.col}`] = update.previousValue;
+                    return acc;
+                  }, {})
+                }
+              }
+            : sheet
+        ));
+        break;
+        
       case 'column_header_update':
         const { colIndex, previousName } = action.data;
         setSheets(prev => prev.map(sheet => 
@@ -122,6 +140,51 @@ const Index = () => {
     }
     
     setHistoryIndex(prev => prev - 1);
+  };
+
+  const clearSelectedCells = () => {
+    const minRow = Math.min(selection.start.row, selection.end.row);
+    const maxRow = Math.max(selection.start.row, selection.end.row);
+    const minCol = Math.min(selection.start.col, selection.end.col);
+    const maxCol = Math.max(selection.start.col, selection.end.col);
+    
+    const cellUpdates = [];
+    const newCells = { ...activeSheet.cells };
+    
+    // Collect all affected cells and their previous values
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = minCol; col <= maxCol; col++) {
+        const cellKey = `${row}-${col}`;
+        const previousValue = activeSheet.cells[cellKey] || "";
+        
+        if (previousValue !== "") { // Only track cells that actually had content
+          cellUpdates.push({
+            row,
+            col,
+            previousValue,
+            newValue: ""
+          });
+        }
+        
+        newCells[cellKey] = "";
+      }
+    }
+    
+    // Only add to history if there were actual changes
+    if (cellUpdates.length > 0) {
+      addToHistory({
+        type: 'bulk_cell_update',
+        data: { cellUpdates },
+        timestamp: Date.now()
+      });
+    }
+    
+    // Update the sheets
+    setSheets(prev => prev.map(sheet => 
+      sheet.id === activeSheetId 
+        ? { ...sheet, cells: newCells }
+        : sheet
+    ));
   };
 
   const updateCell = (row: number, col: number, value: string) => {
@@ -345,6 +408,7 @@ const Index = () => {
               onColumnHeaderUpdate={updateColumnHeader}
               onAddColumn={addNewColumn}
               onAddRow={addNewRow}
+              onClearSelectedCells={clearSelectedCells}
               rowCount={rowCount}
               columnWidths={columnWidths}
               rowHeights={rowHeights}

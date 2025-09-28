@@ -12,6 +12,7 @@ interface SpreadsheetGridProps {
   onColumnHeaderUpdate: (colIndex: number, newName: string) => void;
   onAddColumn: () => void;
   onAddRow: () => void;
+  onClearSelectedCells: () => void;
   rowCount: number;
   columnWidths: {[key: string]: number};
   rowHeights: {[key: string]: number};
@@ -29,6 +30,7 @@ export const SpreadsheetGrid = ({
   onColumnHeaderUpdate,
   onAddColumn,
   onAddRow,
+  onClearSelectedCells,
   rowCount,
   columnWidths,
   rowHeights,
@@ -256,17 +258,7 @@ export const SpreadsheetGrid = ({
       case "Delete":
       case "Backspace":
         e.preventDefault();
-        // Clear all selected cells
-        const minRow = Math.min(selection.start.row, selection.end.row);
-        const maxRow = Math.max(selection.start.row, selection.end.row);
-        const minCol = Math.min(selection.start.col, selection.end.col);
-        const maxCol = Math.max(selection.start.col, selection.end.col);
-        
-        for (let row = minRow; row <= maxRow; row++) {
-          for (let col = minCol; col <= maxCol; col++) {
-            onCellUpdate(row, col, "");
-          }
-        }
+        onClearSelectedCells();
         return;
       case "Escape":
         // Clear selection or exit edit mode
