@@ -29,7 +29,7 @@ export const Cell = ({
   onEdit,
 }: CellProps) => {
   const [editValue, setEditValue] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     setEditValue(value);
@@ -71,13 +71,13 @@ export const Cell = ({
   if (isEditing) {
     return (
       <div className={cellClassName} style={style}>
-        <input
-          ref={inputRef}
+        <textarea
+          ref={inputRef as React.RefObject<HTMLTextAreaElement>}
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={handleSubmit}
           onKeyDown={handleKeyDown}
-          className="w-full h-full bg-transparent outline-none border-none text-sm"
+          className="w-full h-full bg-transparent outline-none border-none text-sm resize-none leading-tight py-0"
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         />
