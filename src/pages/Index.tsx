@@ -18,7 +18,7 @@ export interface SheetData {
 export interface CellSelection {
   start: { row: number; col: number };
   end: { row: number; col: number };
-  type?: 'cell' | 'row' | 'column'; // Track selection type
+  type?: 'cell' | 'row' | 'column' | 'all'; // Track selection type
 }
 
 const Index = () => {

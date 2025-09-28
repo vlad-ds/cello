@@ -24,18 +24,26 @@ const formatCellReference = (row: number, col: number): string => {
 const formatSelectionReference = (selection: CellSelection): string => {
   const { start, end, type } = selection;
   
+  if (type === 'all') {
+    return 'ALL';
+  }
+  
   if (type === 'row') {
     if (start.row === end.row) {
       return `${start.row + 1}:${start.row + 1}`;
     }
-    return `${start.row + 1}:${end.row + 1}`;
+    const minRow = Math.min(start.row, end.row);
+    const maxRow = Math.max(start.row, end.row);
+    return `${minRow + 1}:${maxRow + 1}`;
   }
   
   if (type === 'column') {
     if (start.col === end.col) {
       return `${getColumnLabel(start.col)}:${getColumnLabel(start.col)}`;
     }
-    return `${getColumnLabel(start.col)}:${getColumnLabel(end.col)}`;
+    const minCol = Math.min(start.col, end.col);
+    const maxCol = Math.max(start.col, end.col);
+    return `${getColumnLabel(minCol)}:${getColumnLabel(maxCol)}`;
   }
   
   // Regular cell selection

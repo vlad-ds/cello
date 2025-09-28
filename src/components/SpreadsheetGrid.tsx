@@ -26,6 +26,8 @@ export const SpreadsheetGrid = ({
   rowCount,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
+  const [isSelectingColumns, setIsSelectingColumns] = useState(false);
+  const [isSelectingRows, setIsSelectingRows] = useState(false);
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
   const [editingHeader, setEditingHeader] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -53,6 +55,25 @@ export const SpreadsheetGrid = ({
     });
   };
 
+  const handleRowHeaderMouseDown = (row: number) => {
+    setIsSelectingRows(true);
+    onSelectionChange({ 
+      start: { row, col: 0 }, 
+      end: { row, col: COLS - 1 }, 
+      type: 'row' 
+    });
+  };
+
+  const handleRowHeaderMouseEnter = (row: number) => {
+    if (isSelectingRows) {
+      onSelectionChange({ 
+        ...selection,
+        end: { row, col: COLS - 1 },
+        type: 'row'
+      });
+    }
+  };
+
   const handleColumnHeaderClick = (col: number) => {
     // Select entire column
     onSelectionChange({ 
@@ -62,8 +83,37 @@ export const SpreadsheetGrid = ({
     });
   };
 
+  const handleColumnHeaderMouseDown = (col: number) => {
+    setIsSelectingColumns(true);
+    onSelectionChange({ 
+      start: { row: 0, col }, 
+      end: { row: ROWS - 1, col }, 
+      type: 'column' 
+    });
+  };
+
+  const handleColumnHeaderMouseEnter = (col: number) => {
+    if (isSelectingColumns) {
+      onSelectionChange({ 
+        ...selection,
+        end: { row: ROWS - 1, col },
+        type: 'column'
+      });
+    }
+  };
+
+  const handleSelectAll = () => {
+    onSelectionChange({
+      start: { row: 0, col: 0 },
+      end: { row: ROWS - 1, col: COLS - 1 },
+      type: 'all'
+    });
+  };
+
   const handleMouseUp = () => {
     setIsSelecting(false);
+    setIsSelectingColumns(false);
+    setIsSelectingRows(false);
   };
 
   const handleCellDoubleClick = (row: number, col: number) => {
@@ -169,7 +219,11 @@ export const SpreadsheetGrid = ({
   }, [handleKeyDown]);
 
   useEffect(() => {
-    const handleDocumentMouseUp = () => setIsSelecting(false);
+    const handleDocumentMouseUp = () => {
+      setIsSelecting(false);
+      setIsSelectingColumns(false);
+      setIsSelectingRows(false);
+    };
     document.addEventListener("mouseup", handleDocumentMouseUp);
     return () => document.removeEventListener("mouseup", handleDocumentMouseUp);
   }, []);
@@ -185,7 +239,10 @@ export const SpreadsheetGrid = ({
         {/* Header Row */}
         <div className="flex">
           {/* Empty corner cell */}
-          <div className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground">
+          <div 
+            className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground cursor-pointer hover:bg-grid-selected/20"
+            onClick={handleSelectAll}
+          >
             #
           </div>
           
@@ -199,6 +256,8 @@ export const SpreadsheetGrid = ({
               isEditing={editingHeader === colIndex}
               className="w-24 h-8 cursor-pointer"
               onDoubleClick={() => handleHeaderDoubleClick(colIndex)}
+              onMouseDown={() => handleColumnHeaderMouseDown(colIndex)}
+              onMouseEnter={() => handleColumnHeaderMouseEnter(colIndex)}
               onClick={() => handleColumnHeaderClick(colIndex)}
               onEdit={(value) => handleHeaderEdit(colIndex, value)}
             />
@@ -223,6 +282,8 @@ export const SpreadsheetGrid = ({
               className={`w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground relative group cursor-pointer hover:bg-grid-selected/20 ${
                 isRowHeaderSelected(rowIndex) ? 'bg-grid-selected/40' : ''
               }`}
+              onMouseDown={() => handleRowHeaderMouseDown(rowIndex)}
+              onMouseEnter={() => handleRowHeaderMouseEnter(rowIndex)}
               onClick={() => handleRowHeaderClick(rowIndex)}
             >
               {rowIndex + 1}
