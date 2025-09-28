@@ -2,6 +2,7 @@ import { useState } from "react";
 import { SpreadsheetGrid } from "@/components/SpreadsheetGrid";
 import { SheetTabs } from "@/components/SheetTabs";
 import { CoordinateDisplay } from "@/components/CoordinateDisplay";
+import { ChatPanel } from "@/components/ChatPanel";
 
 export interface CellData {
   [key: string]: string;
@@ -84,6 +85,11 @@ const Index = () => {
     ));
   };
 
+  const handleChatCommand = (command: string) => {
+    // This will be implemented when AI backend is connected
+    console.log("Chat command:", command);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-background">
       {/* Title Header */}
@@ -105,7 +111,7 @@ const Index = () => {
         </div>
 
         {/* Main Spreadsheet Area */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-w-0">
           {/* Coordinate Display */}
           <CoordinateDisplay selection={selection} />
           
@@ -119,6 +125,11 @@ const Index = () => {
               onColumnHeaderUpdate={updateColumnHeader}
             />
           </div>
+        </div>
+
+        {/* Right Sidebar - AI Chat */}
+        <div className="w-80 flex-shrink-0">
+          <ChatPanel onCommand={handleChatCommand} />
         </div>
       </div>
     </div>
