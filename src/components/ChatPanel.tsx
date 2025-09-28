@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { supabase } from "@/integrations/supabase/client";
 
 interface Message {
   id: string;
@@ -14,9 +15,10 @@ interface Message {
 
 interface ChatPanelProps {
   onCommand?: (command: string) => void;
+  selectedCells?: { [key: string]: string };
 }
 
-export const ChatPanel = ({ onCommand }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, selectedCells }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -56,25 +58,39 @@ export const ChatPanel = ({ onCommand }: ChatPanelProps) => {
     setInput("");
     setIsTyping(true);
 
-    // Simulate AI response (replace with actual AI integration later)
-    setTimeout(() => {
-      const responses = [
-        "I understand you want to work with your spreadsheet data. Once connected to Supabase, I'll be able to help you analyze and manipulate your data in real-time!",
-        "That's a great idea! I can help you with formulas, data analysis, and spreadsheet operations once we have the AI backend set up.",
-        "I'd love to help with that! For now, this is just the interface preview. Connect to Supabase to enable full AI functionality.",
-        "Excellent question! I'm designed to help with spreadsheet tasks like calculations, data formatting, and analysis. The backend integration will make this fully functional."
-      ];
+    // Call Gemini AI through Supabase edge function
+    try {
+      const { data, error } = await supabase.functions.invoke('gemini-chat', {
+        body: { 
+          query: input.trim(),
+          selectedCells: selectedCells || {}
+        }
+      });
+
+      if (error) {
+        throw error;
+      }
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: responses[Math.floor(Math.random() * responses.length)],
+        content: data.response || "I'm sorry, I couldn't process your request.",
         timestamp: new Date()
       };
 
       setMessages(prev => [...prev, assistantMessage]);
-      setIsTyping(false);
-    }, 1000 + Math.random() * 1000);
+    } catch (error) {
+      console.error('Error calling Gemini AI:', error);
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: "Sorry, I encountered an error processing your request. Please try again.",
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    }
+    
+    setIsTyping(false);
 
     // Trigger command callback if provided
     onCommand?.(input.trim());

@@ -319,8 +319,31 @@ const Index = () => {
     }
   };
 
+  const getSelectedCellsContent = () => {
+    const minRow = Math.min(selection.start.row, selection.end.row);
+    const maxRow = Math.max(selection.start.row, selection.end.row);
+    const minCol = Math.min(selection.start.col, selection.end.col);
+    const maxCol = Math.max(selection.start.col, selection.end.col);
+    
+    const selectedCells: { [key: string]: string } = {};
+    
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = minCol; col <= maxCol; col++) {
+        const cellKey = `${row}-${col}`;
+        const cellValue = activeSheet.cells[cellKey] || "";
+        if (cellValue.trim()) {
+          // Convert to readable format like A1, B2, etc.
+          const columnLetter = String.fromCharCode(65 + col);
+          const readableKey = `${columnLetter}${row + 1}`;
+          selectedCells[readableKey] = cellValue;
+        }
+      }
+    }
+    
+    return selectedCells;
+  };
+
   const handleChatCommand = (command: string) => {
-    // This will be implemented when AI backend is connected
     console.log("Chat command:", command);
   };
 
@@ -450,7 +473,10 @@ const Index = () => {
             className="flex-shrink-0 bg-card"
             style={{ width: chatPanelWidth }}
           >
-            <ChatPanel onCommand={handleChatCommand} />
+            <ChatPanel 
+              onCommand={handleChatCommand} 
+              selectedCells={getSelectedCellsContent()} 
+            />
           </div>
         </div>
       </div>
