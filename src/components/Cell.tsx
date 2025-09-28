@@ -43,6 +43,7 @@ export const Cell = ({
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
+      console.log('Cell editing started, focusing input. isHeader:', isHeader, 'value:', value);
       inputRef.current.focus();
       inputRef.current.select();
     }
@@ -54,6 +55,7 @@ export const Cell = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    console.log('Cell keydown:', e.key, 'isHeader:', isHeader, 'editValue:', editValue);
     if (e.key === "Enter") {
       e.preventDefault();
       handleSubmit();
