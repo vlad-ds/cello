@@ -80,31 +80,44 @@ const SpreadsheetView = () => {
       
       for (const sheet of sheetsData || []) {
         try {
-          const sheetData = await loadSheetData(sheet.id);
+          // First, try to load the sheet data
+          let sheetData = await loadSheetData(sheet.id);
+          
+          // If no data returned, the table might not exist, so create it
+          if (!sheetData || !sheetData.data) {
+            console.log(`Creating dynamic table for sheet ${sheet.id}`);
+            await createDynamicTable(sheet.id, 5); // Create with 5 columns
+            sheetData = await loadSheetData(sheet.id); // Try loading again
+          }
+          
           const cells: { [key: string]: string } = {};
           const columnHeaders: string[] = [];
           
-          // Extract column headers from the first row of data
+          // Extract column headers and data from the database
           if (sheetData?.data && sheetData.data.length > 0) {
-            const firstRow = sheetData.data[0];
-            const columnNames = Object.keys(firstRow).filter(key => key.startsWith('column_')).sort();
+            const columnNames = Object.keys(sheetData.data[0])
+              .filter(key => key.startsWith('column_'))
+              .sort();
             
-            columnNames.forEach((colName, index) => {
-              columnHeaders[index] = firstRow[colName] || `COLUMN_${index + 1}`;
-            });
-            
-            // Convert database rows to cell format
+            // Process each row
             sheetData.data.forEach((row: any) => {
-              const rowNumber = row.row_number - 1; // Convert to 0-based indexing
+              const rowNumber = row.row_number;
+              
               columnNames.forEach((colName, colIndex) => {
                 if (row[colName]) {
-                  cells[`${rowNumber}-${colIndex}`] = row[colName];
+                  if (rowNumber === 1) {
+                    // Row 1 in database contains column headers
+                    columnHeaders[colIndex] = row[colName];
+                  } else if (rowNumber > 1) {
+                    // Rows 2+ contain cell data (convert to 0-based indexing)
+                    cells[`${rowNumber - 2}-${colIndex}`] = row[colName];
+                  }
                 }
               });
             });
           }
           
-          // Default to 5 columns if no data exists
+          // Default to 5 columns if no headers exist
           if (columnHeaders.length === 0) {
             columnHeaders.push("COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5");
           }
@@ -115,15 +128,29 @@ const SpreadsheetView = () => {
             cells,
             columnHeaders
           });
+          
         } catch (error) {
           console.error(`Error loading data for sheet ${sheet.id}:`, error);
-          // Create empty sheet if loading fails
-          loadedSheets.push({
-            id: sheet.id,
-            name: sheet.name,
-            cells: {},
-            columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
-          });
+          
+          // Try to create the dynamic table as a fallback
+          try {
+            await createDynamicTable(sheet.id, 5);
+            loadedSheets.push({
+              id: sheet.id,
+              name: sheet.name,
+              cells: {},
+              columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+            });
+          } catch (createError) {
+            console.error(`Failed to create dynamic table for sheet ${sheet.id}:`, createError);
+            // Create empty sheet as last resort
+            loadedSheets.push({
+              id: sheet.id,
+              name: sheet.name,
+              cells: {},
+              columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+            });
+          }
         }
       }
 
@@ -198,9 +225,9 @@ const SpreadsheetView = () => {
       })
     );
     
-    // Sync to database
+    // Sync to database (add 1 to row for actual data since headers are at row 0)
     try {
-      await syncCell(activeSheet.id, row, col, value);
+      await syncCell(activeSheet.id, row + 1, col, value);
     } catch (error) {
       console.error('Error syncing cell to database:', error);
     }
@@ -234,9 +261,9 @@ const SpreadsheetView = () => {
       })
     );
     
-    // Sync header to database by updating the first row
+    // Sync header to database by updating the first row (row 0)
     try {
-      await syncCell(activeSheet.id, -1, colIndex, newHeader); // Use row -1 for headers
+      await syncCell(activeSheet.id, 0, colIndex, newHeader); // Use row 0 for headers
     } catch (error) {
       console.error('Error syncing column header to database:', error);
     }
@@ -395,8 +422,8 @@ const SpreadsheetView = () => {
         })
       );
       
-      // Sync to database
-      syncCell(sheetId, row, col, oldValue || "").catch(console.error);
+      // Sync to database (add 1 to row for actual data)
+      syncCell(sheetId, row + 1, col, oldValue || "").catch(console.error);
     } else if (action.type === 'column_header_update') {
       const { sheetId, col, oldValue } = action.data;
       setSheets(prevSheets => 
@@ -411,7 +438,7 @@ const SpreadsheetView = () => {
       );
       
       // Sync header to database
-      syncCell(sheetId, -1, col, oldValue || "").catch(console.error);
+      syncCell(sheetId, 0, col, oldValue || "").catch(console.error); // Use row 0 for headers
     }
     
     setHistoryIndex(historyIndex - 1);
