@@ -7,6 +7,7 @@ interface CellProps {
   isSelected?: boolean;
   isEditing?: boolean;
   className?: string;
+  style?: React.CSSProperties;
   onMouseDown?: () => void;
   onMouseEnter?: () => void;
   onDoubleClick?: () => void;
@@ -20,6 +21,7 @@ export const Cell = ({
   isSelected = false,
   isEditing = false,
   className,
+  style,
   onMouseDown,
   onMouseEnter,
   onDoubleClick,
@@ -68,7 +70,7 @@ export const Cell = ({
 
   if (isEditing) {
     return (
-      <div className={cellClassName}>
+      <div className={cellClassName} style={style}>
         <input
           ref={inputRef}
           value={editValue}
@@ -86,6 +88,7 @@ export const Cell = ({
   return (
     <div
       className={cellClassName}
+      style={style}
       onMouseDown={onMouseDown}
       onMouseEnter={onMouseEnter}
       onDoubleClick={onDoubleClick}

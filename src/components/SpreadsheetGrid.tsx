@@ -13,6 +13,12 @@ interface SpreadsheetGridProps {
   onAddColumn: () => void;
   onAddRow: () => void;
   rowCount: number;
+  columnWidths: {[key: string]: number};
+  rowHeights: {[key: string]: number};
+  onColumnResize: (colIndex: number, width: number) => void;
+  onRowResize: (rowIndex: number, height: number) => void;
+  getColumnWidth: (colIndex: number) => number;
+  getRowHeight: (rowIndex: number) => number;
 }
 
 export const SpreadsheetGrid = ({
@@ -24,12 +30,24 @@ export const SpreadsheetGrid = ({
   onAddColumn,
   onAddRow,
   rowCount,
+  columnWidths,
+  rowHeights,
+  onColumnResize,
+  onRowResize,
+  getColumnWidth,
+  getRowHeight,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSelectingColumns, setIsSelectingColumns] = useState(false);
   const [isSelectingRows, setIsSelectingRows] = useState(false);
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
   const [editingHeader, setEditingHeader] = useState<number | null>(null);
+  const [resizingColumn, setResizingColumn] = useState<number | null>(null);
+  const [resizingRow, setResizingRow] = useState<number | null>(null);
+  const [initialMouseX, setInitialMouseX] = useState(0);
+  const [initialMouseY, setInitialMouseY] = useState(0);
+  const [initialWidth, setInitialWidth] = useState(0);
+  const [initialHeight, setInitialHeight] = useState(0);
   const gridRef = useRef<HTMLDivElement>(null);
 
   const ROWS = rowCount;
@@ -110,10 +128,28 @@ export const SpreadsheetGrid = ({
     });
   };
 
+  const handleColumnResizeStart = (colIndex: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setResizingColumn(colIndex);
+    setInitialMouseX(e.clientX);
+    setInitialWidth(getColumnWidth(colIndex));
+  };
+
+  const handleRowResizeStart = (rowIndex: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setResizingRow(rowIndex);
+    setInitialMouseY(e.clientY);
+    setInitialHeight(getRowHeight(rowIndex));
+  };
+
   const handleMouseUp = () => {
     setIsSelecting(false);
     setIsSelectingColumns(false);
     setIsSelectingRows(false);
+    setResizingColumn(null);
+    setResizingRow(null);
   };
 
   const handleCellDoubleClick = (row: number, col: number) => {
@@ -158,6 +194,31 @@ export const SpreadsheetGrid = ({
     const maxCol = Math.max(selection.start.col, selection.end.col);
     return col >= minCol && col <= maxCol;
   };
+
+  // Resize functionality
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (resizingColumn !== null) {
+      const deltaX = e.clientX - initialMouseX;
+      const newWidth = initialWidth + deltaX;
+      onColumnResize(resizingColumn, newWidth);
+    }
+    if (resizingRow !== null) {
+      const deltaY = e.clientY - initialMouseY;
+      const newHeight = initialHeight + deltaY;
+      onRowResize(resizingRow, newHeight);
+    }
+  }, [resizingColumn, resizingRow, initialMouseX, initialMouseY, initialWidth, initialHeight, onColumnResize, onRowResize]);
+
+  useEffect(() => {
+    if (resizingColumn !== null || resizingRow !== null) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+      return () => {
+        document.removeEventListener("mousemove", handleMouseMove);
+        document.removeEventListener("mouseup", handleMouseUp);
+      };
+    }
+  }, [resizingColumn, resizingRow, handleMouseMove]);
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -223,6 +284,8 @@ export const SpreadsheetGrid = ({
       setIsSelecting(false);
       setIsSelectingColumns(false);
       setIsSelectingRows(false);
+      setResizingColumn(null);
+      setResizingRow(null);
     };
     document.addEventListener("mouseup", handleDocumentMouseUp);
     return () => document.removeEventListener("mouseup", handleDocumentMouseUp);
@@ -248,19 +311,27 @@ export const SpreadsheetGrid = ({
           
           {/* Column Headers */}
           {sheet.columnHeaders.map((header, colIndex) => (
-            <Cell
-              key={`header-${colIndex}`}
-              value={header}
-              isHeader
-              isSelected={isColumnHeaderSelected(colIndex)}
-              isEditing={editingHeader === colIndex}
-              className="w-24 h-8 cursor-pointer"
-              onDoubleClick={() => handleHeaderDoubleClick(colIndex)}
-              onMouseDown={() => handleColumnHeaderMouseDown(colIndex)}
-              onMouseEnter={() => handleColumnHeaderMouseEnter(colIndex)}
-              onClick={() => handleColumnHeaderClick(colIndex)}
-              onEdit={(value) => handleHeaderEdit(colIndex, value)}
-            />
+            <div key={`header-container-${colIndex}`} className="relative flex">
+              <Cell
+                key={`header-${colIndex}`}
+                value={header}
+                isHeader
+                isSelected={isColumnHeaderSelected(colIndex)}
+                isEditing={editingHeader === colIndex}
+                className="cursor-pointer"
+                style={{ width: getColumnWidth(colIndex), height: 32 }}
+                onDoubleClick={() => handleHeaderDoubleClick(colIndex)}
+                onMouseDown={() => handleColumnHeaderMouseDown(colIndex)}
+                onMouseEnter={() => handleColumnHeaderMouseEnter(colIndex)}
+                onClick={() => handleColumnHeaderClick(colIndex)}
+                onEdit={(value) => handleHeaderEdit(colIndex, value)}
+              />
+              {/* Column Resize Handle */}
+              <div
+                className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-primary/50 transition-colors z-10"
+                onMouseDown={(e) => handleColumnResizeStart(colIndex, e)}
+              />
+            </div>
           ))}
           
           {/* Add Column Button */}
@@ -276,30 +347,38 @@ export const SpreadsheetGrid = ({
 
         {/* Data Rows */}
         {Array.from({ length: ROWS }, (_, rowIndex) => (
-          <div key={rowIndex} className="flex">
+          <div key={rowIndex} className="flex relative">
             {/* Row Number */}
-            <div 
-              className={`w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground relative group cursor-pointer hover:bg-grid-selected/20 ${
-                isRowHeaderSelected(rowIndex) ? 'bg-grid-selected/40' : ''
-              }`}
-              onMouseDown={() => handleRowHeaderMouseDown(rowIndex)}
-              onMouseEnter={() => handleRowHeaderMouseEnter(rowIndex)}
-              onClick={() => handleRowHeaderClick(rowIndex)}
-            >
-              {rowIndex + 1}
-              {rowIndex === ROWS - 1 && (
-                <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAddRow();
-                    }}
-                    className="w-4 h-4 rounded-full border border-muted-foreground/30 flex items-center justify-center hover:border-primary/60 hover:bg-primary/10 transition-all duration-200 hover:scale-110 bg-card shadow-sm"
-                  >
-                    <Plus className="w-2.5 h-2.5 text-muted-foreground hover:text-primary transition-colors" />
-                  </button>
-                </div>
-              )}
+            <div className="relative flex flex-col">
+              <div 
+                className={`w-16 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground relative group cursor-pointer hover:bg-grid-selected/20 ${
+                  isRowHeaderSelected(rowIndex) ? 'bg-grid-selected/40' : ''
+                }`}
+                style={{ height: getRowHeight(rowIndex) }}
+                onMouseDown={() => handleRowHeaderMouseDown(rowIndex)}
+                onMouseEnter={() => handleRowHeaderMouseEnter(rowIndex)}
+                onClick={() => handleRowHeaderClick(rowIndex)}
+              >
+                {rowIndex + 1}
+                {rowIndex === ROWS - 1 && (
+                  <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAddRow();
+                      }}
+                      className="w-4 h-4 rounded-full border border-muted-foreground/30 flex items-center justify-center hover:border-primary/60 hover:bg-primary/10 transition-all duration-200 hover:scale-110 bg-card shadow-sm"
+                    >
+                      <Plus className="w-2.5 h-2.5 text-muted-foreground hover:text-primary transition-colors" />
+                    </button>
+                  </div>
+                )}
+              </div>
+              {/* Row Resize Handle */}
+              <div
+                className="absolute bottom-0 left-0 w-full h-1 cursor-row-resize hover:bg-primary/50 transition-colors z-10"
+                onMouseDown={(e) => handleRowResizeStart(rowIndex, e)}
+              />
             </div>
             
             {/* Data Cells */}
@@ -310,7 +389,7 @@ export const SpreadsheetGrid = ({
                 isHeader={false}
                 isSelected={isCellSelected(rowIndex, colIndex)}
                 isEditing={editingCell?.row === rowIndex && editingCell?.col === colIndex}
-                className="w-24 h-8"
+                style={{ width: getColumnWidth(colIndex), height: getRowHeight(rowIndex) }}
                 onMouseDown={() => handleCellMouseDown(rowIndex, colIndex)}
                 onMouseEnter={() => handleCellMouseEnter(rowIndex, colIndex)}
                 onDoubleClick={() => handleCellDoubleClick(rowIndex, colIndex)}

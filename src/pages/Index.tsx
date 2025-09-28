@@ -41,6 +41,8 @@ const Index = () => {
   const [chatPanelWidth, setChatPanelWidth] = useState(480); // Default 480px (wider)
   const [isResizing, setIsResizing] = useState(false);
   const [rowCount, setRowCount] = useState(20); // Dynamic row management
+  const [columnWidths, setColumnWidths] = useState<{[key: string]: number}>({});
+  const [rowHeights, setRowHeights] = useState<{[key: string]: number}>({});
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId)!;
 
@@ -96,6 +98,28 @@ const Index = () => {
     };
     setSheets(prev => [...prev, newSheet]);
     setActiveSheetId(newId);
+  };
+
+  const updateColumnWidth = (colIndex: number, width: number) => {
+    setColumnWidths(prev => ({
+      ...prev,
+      [`${activeSheetId}-${colIndex}`]: Math.max(60, width)
+    }));
+  };
+
+  const updateRowHeight = (rowIndex: number, height: number) => {
+    setRowHeights(prev => ({
+      ...prev,
+      [`${activeSheetId}-${rowIndex}`]: Math.max(24, height)
+    }));
+  };
+
+  const getColumnWidth = (colIndex: number) => {
+    return columnWidths[`${activeSheetId}-${colIndex}`] || 96; // Default 96px (w-24)
+  };
+
+  const getRowHeight = (rowIndex: number) => {
+    return rowHeights[`${activeSheetId}-${rowIndex}`] || 32; // Default 32px (h-8)
   };
 
   const renameSheet = (sheetId: string, newName: string) => {
@@ -179,6 +203,12 @@ const Index = () => {
               onAddColumn={addNewColumn}
               onAddRow={addNewRow}
               rowCount={rowCount}
+              columnWidths={columnWidths}
+              rowHeights={rowHeights}
+              onColumnResize={updateColumnWidth}
+              onRowResize={updateRowHeight}
+              getColumnWidth={getColumnWidth}
+              getRowHeight={getRowHeight}
             />
           </div>
         </div>
