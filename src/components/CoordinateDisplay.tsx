@@ -21,13 +21,33 @@ const formatCellReference = (row: number, col: number): string => {
   return `${getColumnLabel(col)}${row + 1}`;
 };
 
-export const CoordinateDisplay = ({ selection }: CoordinateDisplayProps) => {
-  const { start, end } = selection;
+const formatSelectionReference = (selection: CellSelection): string => {
+  const { start, end, type } = selection;
   
-  const displayText = 
-    start.row === end.row && start.col === end.col
-      ? formatCellReference(start.row, start.col)
-      : `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
+  if (type === 'row') {
+    if (start.row === end.row) {
+      return `${start.row + 1}:${start.row + 1}`;
+    }
+    return `${start.row + 1}:${end.row + 1}`;
+  }
+  
+  if (type === 'column') {
+    if (start.col === end.col) {
+      return `${getColumnLabel(start.col)}:${getColumnLabel(start.col)}`;
+    }
+    return `${getColumnLabel(start.col)}:${getColumnLabel(end.col)}`;
+  }
+  
+  // Regular cell selection
+  if (start.row === end.row && start.col === end.col) {
+    return formatCellReference(start.row, start.col);
+  }
+  
+  return `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
+};
+
+export const CoordinateDisplay = ({ selection }: CoordinateDisplayProps) => {
+  const displayText = formatSelectionReference(selection);
 
   return (
     <div className="bg-coordinate-background border-b border-border px-4 py-2">

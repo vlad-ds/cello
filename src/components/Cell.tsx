@@ -10,6 +10,7 @@ interface CellProps {
   onMouseDown?: () => void;
   onMouseEnter?: () => void;
   onDoubleClick?: () => void;
+  onClick?: () => void;
   onEdit?: (value: string) => void;
 }
 
@@ -22,6 +23,7 @@ export const Cell = ({
   onMouseDown,
   onMouseEnter,
   onDoubleClick,
+  onClick,
   onEdit,
 }: CellProps) => {
   const [editValue, setEditValue] = useState(value);
@@ -87,6 +89,7 @@ export const Cell = ({
       onMouseDown={onMouseDown}
       onMouseEnter={onMouseEnter}
       onDoubleClick={onDoubleClick}
+      onClick={onClick}
     >
       <span className="truncate w-full">
         {value || (isHeader ? "" : "")}

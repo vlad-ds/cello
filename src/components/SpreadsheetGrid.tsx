@@ -35,13 +35,31 @@ export const SpreadsheetGrid = ({
 
   const handleCellMouseDown = (row: number, col: number) => {
     setIsSelecting(true);
-    onSelectionChange({ start: { row, col }, end: { row, col } });
+    onSelectionChange({ start: { row, col }, end: { row, col }, type: 'cell' });
   };
 
   const handleCellMouseEnter = (row: number, col: number) => {
-    if (isSelecting) {
+    if (isSelecting && selection.type === 'cell') {
       onSelectionChange({ ...selection, end: { row, col } });
     }
+  };
+
+  const handleRowHeaderClick = (row: number) => {
+    // Select entire row
+    onSelectionChange({ 
+      start: { row, col: 0 }, 
+      end: { row, col: COLS - 1 }, 
+      type: 'row' 
+    });
+  };
+
+  const handleColumnHeaderClick = (col: number) => {
+    // Select entire column
+    onSelectionChange({ 
+      start: { row: 0, col }, 
+      end: { row: ROWS - 1, col }, 
+      type: 'column' 
+    });
   };
 
   const handleMouseUp = () => {
@@ -66,6 +84,29 @@ export const SpreadsheetGrid = ({
   const handleHeaderDoubleClick = (colIndex: number) => {
     console.log("Header double click:", colIndex);
     setEditingHeader(colIndex);
+  };
+
+  const isCellSelected = (row: number, col: number) => {
+    const minRow = Math.min(selection.start.row, selection.end.row);
+    const maxRow = Math.max(selection.start.row, selection.end.row);
+    const minCol = Math.min(selection.start.col, selection.end.col);
+    const maxCol = Math.max(selection.start.col, selection.end.col);
+    
+    return row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
+  };
+
+  const isRowHeaderSelected = (row: number) => {
+    if (selection.type !== 'row') return false;
+    const minRow = Math.min(selection.start.row, selection.end.row);
+    const maxRow = Math.max(selection.start.row, selection.end.row);
+    return row >= minRow && row <= maxRow;
+  };
+
+  const isColumnHeaderSelected = (col: number) => {
+    if (selection.type !== 'column') return false;
+    const minCol = Math.min(selection.start.col, selection.end.col);
+    const maxCol = Math.max(selection.start.col, selection.end.col);
+    return col >= minCol && col <= maxCol;
   };
 
   // Keyboard navigation
@@ -119,22 +160,13 @@ export const SpreadsheetGrid = ({
         return;
     }
 
-    onSelectionChange({ start: { row: newRow, col: newCol }, end: { row: newRow, col: newCol } });
+    onSelectionChange({ start: { row: newRow, col: newCol }, end: { row: newRow, col: newCol }, type: 'cell' });
   }, [selection, editingCell, editingHeader, onSelectionChange, onCellUpdate, ROWS, COLS]);
 
   useEffect(() => {
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
-
-  const isCellSelected = (row: number, col: number) => {
-    const minRow = Math.min(selection.start.row, selection.end.row);
-    const maxRow = Math.max(selection.start.row, selection.end.row);
-    const minCol = Math.min(selection.start.col, selection.end.col);
-    const maxCol = Math.max(selection.start.col, selection.end.col);
-    
-    return row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
-  };
 
   useEffect(() => {
     const handleDocumentMouseUp = () => setIsSelecting(false);
@@ -163,10 +195,11 @@ export const SpreadsheetGrid = ({
               key={`header-${colIndex}`}
               value={header}
               isHeader
-              isSelected={false}
+              isSelected={isColumnHeaderSelected(colIndex)}
               isEditing={editingHeader === colIndex}
-              className="w-24 h-8"
+              className="w-24 h-8 cursor-pointer"
               onDoubleClick={() => handleHeaderDoubleClick(colIndex)}
+              onClick={() => handleColumnHeaderClick(colIndex)}
               onEdit={(value) => handleHeaderEdit(colIndex, value)}
             />
           ))}
@@ -186,12 +219,20 @@ export const SpreadsheetGrid = ({
         {Array.from({ length: ROWS }, (_, rowIndex) => (
           <div key={rowIndex} className="flex">
             {/* Row Number */}
-            <div className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground relative group">
+            <div 
+              className={`w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground relative group cursor-pointer hover:bg-grid-selected/20 ${
+                isRowHeaderSelected(rowIndex) ? 'bg-grid-selected/40' : ''
+              }`}
+              onClick={() => handleRowHeaderClick(rowIndex)}
+            >
               {rowIndex + 1}
               {rowIndex === ROWS - 1 && (
                 <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                   <button
-                    onClick={onAddRow}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAddRow();
+                    }}
                     className="w-4 h-4 rounded-full border border-muted-foreground/30 flex items-center justify-center hover:border-primary/60 hover:bg-primary/10 transition-all duration-200 hover:scale-110 bg-card shadow-sm"
                   >
                     <Plus className="w-2.5 h-2.5 text-muted-foreground hover:text-primary transition-colors" />

@@ -18,6 +18,7 @@ export interface SheetData {
 export interface CellSelection {
   start: { row: number; col: number };
   end: { row: number; col: number };
+  type?: 'cell' | 'row' | 'column'; // Track selection type
 }
 
 const Index = () => {
@@ -33,7 +34,8 @@ const Index = () => {
   const [activeSheetId, setActiveSheetId] = useState("sheet1");
   const [selection, setSelection] = useState<CellSelection>({
     start: { row: 0, col: 0 },
-    end: { row: 0, col: 0 }
+    end: { row: 0, col: 0 },
+    type: 'cell'
   });
   
   const [chatPanelWidth, setChatPanelWidth] = useState(480); // Default 480px (wider)
