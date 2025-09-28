@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+/* Professional Spreadsheet Design System
 All colors MUST be HSL.
 */
 
@@ -17,8 +17,8 @@ All colors MUST be HSL.
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 210 100% 45%;
+    --primary-foreground: 0 0% 100%;
 
     --secondary: 210 40% 96.1%;
     --secondary-foreground: 222.2 47.4% 11.2%;
@@ -34,24 +34,31 @@ All colors MUST be HSL.
 
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --ring: 210 100% 45%;
 
-    --radius: 0.5rem;
+    --radius: 0.375rem;
+
+    /* Spreadsheet Design Tokens */
+    --grid-background: 0 0% 100%;
+    --grid-border: 0 0% 90%;
+    --grid-header: 0 0% 96%;
+    --grid-header-foreground: 0 0% 40%;
+    --grid-selected: 210 100% 95%;
+    --grid-selected-border: 210 100% 45%;
+    --grid-hover: 210 40% 98%;
+    --grid-active: 210 100% 45%;
+    --tab-background: 0 0% 98%;
+    --tab-active: 210 100% 45%;
+    --tab-active-foreground: 0 0% 100%;
+    --coordinate-background: 0 0% 97%;
 
     --sidebar-background: 0 0% 98%;
-
     --sidebar-foreground: 240 5.3% 26.1%;
-
     --sidebar-primary: 240 5.9% 10%;
-
     --sidebar-primary-foreground: 0 0% 98%;
-
     --sidebar-accent: 240 4.8% 95.9%;
-
     --sidebar-accent-foreground: 240 5.9% 10%;
-
     --sidebar-border: 220 13% 91%;
-
     --sidebar-ring: 217.2 91.2% 59.8%;
   }
 
