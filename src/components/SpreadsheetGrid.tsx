@@ -12,6 +12,7 @@ interface SpreadsheetGridProps {
   onColumnHeaderUpdate: (colIndex: number, newName: string) => void;
   onAddColumn: () => void;
   onAddRow: () => void;
+  rowCount: number;
 }
 
 export const SpreadsheetGrid = ({
@@ -22,13 +23,14 @@ export const SpreadsheetGrid = ({
   onColumnHeaderUpdate,
   onAddColumn,
   onAddRow,
+  rowCount,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
   const [editingHeader, setEditingHeader] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
-  const ROWS = 20;
+  const ROWS = rowCount;
   const COLS = sheet.columnHeaders.length;
 
   const handleCellMouseDown = (row: number, col: number) => {
@@ -170,15 +172,13 @@ export const SpreadsheetGrid = ({
           ))}
           
           {/* Add Column Button */}
-          <div className="w-12 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center">
-            <Button
+          <div className="w-8 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center group">
+            <button
               onClick={onAddColumn}
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 hover:bg-grid-selected/50 rounded-sm"
+              className="w-5 h-5 rounded-full border border-muted-foreground/30 flex items-center justify-center hover:border-primary/60 hover:bg-primary/10 transition-all duration-200 group-hover:scale-110"
             >
-              <Plus className="w-3 h-3 text-muted-foreground hover:text-primary" />
-            </Button>
+              <Plus className="w-3 h-3 text-muted-foreground group-hover:text-primary transition-colors" />
+            </button>
           </div>
         </div>
 
@@ -186,8 +186,18 @@ export const SpreadsheetGrid = ({
         {Array.from({ length: ROWS }, (_, rowIndex) => (
           <div key={rowIndex} className="flex">
             {/* Row Number */}
-            <div className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground">
+            <div className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center text-xs font-medium text-grid-header-foreground relative group">
               {rowIndex + 1}
+              {rowIndex === ROWS - 1 && (
+                <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                  <button
+                    onClick={onAddRow}
+                    className="w-4 h-4 rounded-full border border-muted-foreground/30 flex items-center justify-center hover:border-primary/60 hover:bg-primary/10 transition-all duration-200 hover:scale-110 bg-card shadow-sm"
+                  >
+                    <Plus className="w-2.5 h-2.5 text-muted-foreground hover:text-primary transition-colors" />
+                  </button>
+                </div>
+              )}
             </div>
             
             {/* Data Cells */}
@@ -207,25 +217,6 @@ export const SpreadsheetGrid = ({
             ))}
           </div>
         ))}
-
-        {/* Add Row Button Row */}
-        <div className="flex">
-          <div className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center">
-            <Button
-              onClick={onAddRow}
-              size="sm"
-              variant="ghost"
-              className="h-6 w-6 p-0 hover:bg-grid-selected/50 rounded-sm"
-            >
-              <Plus className="w-3 h-3 text-muted-foreground hover:text-primary" />
-            </Button>
-          </div>
-          {/* Empty cells for alignment */}
-          {Array.from({ length: COLS }, (_, colIndex) => (
-            <div key={`add-row-${colIndex}`} className="w-24 h-8 border-r border-b border-grid-border bg-grid-hover/30" />
-          ))}
-          <div className="w-12 h-8 border-r border-b border-grid-border bg-grid-hover/30" />
-        </div>
       </div>
     </div>
   );

@@ -38,6 +38,7 @@ const Index = () => {
   
   const [chatPanelWidth, setChatPanelWidth] = useState(480); // Default 480px (wider)
   const [isResizing, setIsResizing] = useState(false);
+  const [rowCount, setRowCount] = useState(20); // Dynamic row management
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId)!;
 
@@ -80,8 +81,7 @@ const Index = () => {
   };
 
   const addNewRow = () => {
-    // For now, just show feedback - could extend to increase ROWS constant or add dynamic row management
-    console.log("Add new row functionality - can be extended for dynamic rows");
+    setRowCount(prev => prev + 1);
   };
 
   const addNewSheet = () => {
@@ -176,6 +176,7 @@ const Index = () => {
               onColumnHeaderUpdate={updateColumnHeader}
               onAddColumn={addNewColumn}
               onAddRow={addNewRow}
+              rowCount={rowCount}
             />
           </div>
         </div>
