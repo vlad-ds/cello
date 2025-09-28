@@ -92,7 +92,7 @@ export const ChatPanel = ({ onCommand }: ChatPanelProps) => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-card border-l border-border">
+    <div className="flex flex-col h-full bg-card">
       {/* Header */}
       <div className="p-4 border-b border-border bg-gradient-to-r from-primary/5 to-accent/5">
         <div className="flex items-center gap-2">

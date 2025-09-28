@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { SpreadsheetGrid } from "@/components/SpreadsheetGrid";
 import { SheetTabs } from "@/components/SheetTabs";
 import { CoordinateDisplay } from "@/components/CoordinateDisplay";
@@ -35,6 +35,9 @@ const Index = () => {
     start: { row: 0, col: 0 },
     end: { row: 0, col: 0 }
   });
+  
+  const [chatPanelWidth, setChatPanelWidth] = useState(480); // Default 480px (wider)
+  const [isResizing, setIsResizing] = useState(false);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId)!;
 
@@ -90,6 +93,38 @@ const Index = () => {
     console.log("Chat command:", command);
   };
 
+  // Resize functionality
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  }, []);
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isResizing) return;
+    
+    const newWidth = window.innerWidth - e.clientX;
+    const minWidth = 300;
+    const maxWidth = 800;
+    
+    setChatPanelWidth(Math.max(minWidth, Math.min(maxWidth, newWidth)));
+  }, [isResizing]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsResizing(false);
+  }, []);
+
+  // Add global mouse event listeners
+  useEffect(() => {
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      return () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isResizing, handleMouseMove, handleMouseUp]);
+
   return (
     <div className="flex flex-col h-screen bg-background">
       {/* Title Header */}
@@ -128,8 +163,22 @@ const Index = () => {
         </div>
 
         {/* Right Sidebar - AI Chat */}
-        <div className="w-80 flex-shrink-0">
-          <ChatPanel onCommand={handleChatCommand} />
+        <div className="flex-shrink-0 flex">
+          {/* Resize Handle */}
+          <div
+            className="w-1 bg-border hover:bg-primary/50 cursor-col-resize transition-colors flex-shrink-0 group"
+            onMouseDown={handleMouseDown}
+          >
+            <div className="w-full h-full group-hover:bg-primary/20" />
+          </div>
+          
+          {/* Chat Panel */}
+          <div 
+            className="flex-shrink-0 bg-card"
+            style={{ width: chatPanelWidth }}
+          >
+            <ChatPanel onCommand={handleChatCommand} />
+          </div>
         </div>
       </div>
     </div>
