@@ -76,6 +76,14 @@ const Index = () => {
     setActiveSheetId(newId);
   };
 
+  const renameSheet = (sheetId: string, newName: string) => {
+    setSheets(prev => prev.map(sheet => 
+      sheet.id === sheetId 
+        ? { ...sheet, name: newName }
+        : sheet
+    ));
+  };
+
   return (
     <div className="flex flex-col h-screen bg-background">
       {/* Title Header */}
@@ -92,6 +100,7 @@ const Index = () => {
             activeSheetId={activeSheetId}
             onSheetSelect={setActiveSheetId}
             onAddSheet={addNewSheet}
+            onSheetRename={renameSheet}
           />
         </div>
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Cell } from "./Cell";
 import { SheetData, CellSelection } from "@/pages/Index";
 
@@ -19,6 +19,7 @@ export const SpreadsheetGrid = ({
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
+  const [editingHeader, setEditingHeader] = useState<number | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
   const ROWS = 20;
@@ -47,6 +48,71 @@ export const SpreadsheetGrid = ({
     onCellUpdate(row, col, value);
     setEditingCell(null);
   };
+
+  const handleHeaderEdit = (colIndex: number, value: string) => {
+    onColumnHeaderUpdate(colIndex, value);
+    setEditingHeader(null);
+  };
+
+  const handleHeaderDoubleClick = (colIndex: number) => {
+    setEditingHeader(colIndex);
+  };
+
+  // Keyboard navigation
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (editingCell || editingHeader) return;
+
+    const { start } = selection;
+    let newRow = start.row;
+    let newCol = start.col;
+
+    switch (e.key) {
+      case "ArrowUp":
+        e.preventDefault();
+        newRow = Math.max(0, start.row - 1);
+        break;
+      case "ArrowDown":
+        e.preventDefault();
+        newRow = Math.min(ROWS - 1, start.row + 1);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        newCol = Math.max(0, start.col - 1);
+        break;
+      case "ArrowRight":
+      case "Tab":
+        e.preventDefault();
+        newCol = Math.min(COLS - 1, start.col + 1);
+        break;
+      case "Enter":
+        e.preventDefault();
+        setEditingCell({ row: start.row, col: start.col });
+        return;
+      case "Delete":
+      case "Backspace":
+        e.preventDefault();
+        onCellUpdate(start.row, start.col, "");
+        return;
+      case "Escape":
+        // Clear selection or exit edit mode
+        return;
+      default:
+        // Start editing if a printable character is pressed
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          setEditingCell({ row: start.row, col: start.col });
+          // The character will be handled by the input field
+          return;
+        }
+        return;
+    }
+
+    onSelectionChange({ start: { row: newRow, col: newCol }, end: { row: newRow, col: newCol } });
+  }, [selection, editingCell, editingHeader, onSelectionChange, onCellUpdate, ROWS, COLS]);
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
 
   const isCellSelected = (row: number, col: number) => {
     const minRow = Math.min(selection.start.row, selection.end.row);
@@ -85,9 +151,10 @@ export const SpreadsheetGrid = ({
               value={header}
               isHeader
               isSelected={false}
-              isEditing={false}
+              isEditing={editingHeader === colIndex}
               className="w-24 h-8"
-              onEdit={(value) => onColumnHeaderUpdate(colIndex, value)}
+              onDoubleClick={() => handleHeaderDoubleClick(colIndex)}
+              onEdit={(value) => handleHeaderEdit(colIndex, value)}
             />
           ))}
         </div>
