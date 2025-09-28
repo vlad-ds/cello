@@ -256,7 +256,17 @@ export const SpreadsheetGrid = ({
       case "Delete":
       case "Backspace":
         e.preventDefault();
-        onCellUpdate(start.row, start.col, "");
+        // Clear all selected cells
+        const minRow = Math.min(selection.start.row, selection.end.row);
+        const maxRow = Math.max(selection.start.row, selection.end.row);
+        const minCol = Math.min(selection.start.col, selection.end.col);
+        const maxCol = Math.max(selection.start.col, selection.end.col);
+        
+        for (let row = minRow; row <= maxRow; row++) {
+          for (let col = minCol; col <= maxCol; col++) {
+            onCellUpdate(row, col, "");
+          }
+        }
         return;
       case "Escape":
         // Clear selection or exit edit mode
@@ -325,6 +335,9 @@ export const SpreadsheetGrid = ({
                 onMouseEnter={() => handleColumnHeaderMouseEnter(colIndex)}
                 onClick={() => handleColumnHeaderClick(colIndex)}
                 onEdit={(value) => handleHeaderEdit(colIndex, value)}
+                onSelectionChange={onSelectionChange}
+                selection={selection}
+                ROWS={ROWS}
               />
               {/* Column Resize Handle */}
               <div
@@ -394,6 +407,9 @@ export const SpreadsheetGrid = ({
                 onMouseEnter={() => handleCellMouseEnter(rowIndex, colIndex)}
                 onDoubleClick={() => handleCellDoubleClick(rowIndex, colIndex)}
                 onEdit={(value) => handleCellEdit(rowIndex, colIndex, value)}
+                onSelectionChange={onSelectionChange}
+                selection={selection}
+                ROWS={ROWS}
               />
             ))}
           </div>

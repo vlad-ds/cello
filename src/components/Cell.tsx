@@ -13,6 +13,9 @@ interface CellProps {
   onDoubleClick?: () => void;
   onClick?: () => void;
   onEdit?: (value: string) => void;
+  onSelectionChange?: (selection: any) => void;
+  selection?: any;
+  ROWS?: number;
 }
 
 export const Cell = ({
@@ -27,6 +30,9 @@ export const Cell = ({
   onDoubleClick,
   onClick,
   onEdit,
+  onSelectionChange,
+  selection,
+  ROWS,
 }: CellProps) => {
   const [editValue, setEditValue] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -47,7 +53,23 @@ export const Cell = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === "Tab") {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSubmit();
+      // Move to next row after editing if we have access to selection
+      if (onSelectionChange && selection && ROWS) {
+        setTimeout(() => {
+          const currentRow = selection.start.row;
+          const currentCol = selection.start.col;
+          const newRow = Math.min(ROWS - 1, currentRow + 1);
+          onSelectionChange({ 
+            start: { row: newRow, col: currentCol }, 
+            end: { row: newRow, col: currentCol }, 
+            type: 'cell' 
+          });
+        }, 0);
+      }
+    } else if (e.key === "Tab") {
       e.preventDefault();
       handleSubmit();
     } else if (e.key === "Escape") {
