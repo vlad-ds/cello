@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
+import { Undo } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { SpreadsheetGrid } from "@/components/SpreadsheetGrid";
 import { SheetTabs } from "@/components/SheetTabs";
 import { CoordinateDisplay } from "@/components/CoordinateDisplay";
@@ -19,6 +21,12 @@ export interface CellSelection {
   start: { row: number; col: number };
   end: { row: number; col: number };
   type?: 'cell' | 'row' | 'column' | 'all'; // Track selection type
+}
+
+export interface Action {
+  type: 'cell_update' | 'column_header_update' | 'add_column' | 'add_row';
+  data: any;
+  timestamp: number;
 }
 
 const Index = () => {
@@ -43,10 +51,91 @@ const Index = () => {
   const [rowCount, setRowCount] = useState(20); // Dynamic row management
   const [columnWidths, setColumnWidths] = useState<{[key: string]: number}>({});
   const [rowHeights, setRowHeights] = useState<{[key: string]: number}>({});
+  const [history, setHistory] = useState<Action[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId)!;
 
+  const addToHistory = (action: Action) => {
+    // Remove any future history if we're not at the end
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(action);
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+    
+    // Limit history to 100 actions to prevent memory issues
+    if (newHistory.length > 100) {
+      setHistory(newHistory.slice(-100));
+      setHistoryIndex(99);
+    }
+  };
+
+  const undo = () => {
+    if (historyIndex < 0) return;
+    
+    const action = history[historyIndex];
+    
+    switch (action.type) {
+      case 'cell_update':
+        const { row, col, previousValue } = action.data;
+        setSheets(prev => prev.map(sheet => 
+          sheet.id === activeSheetId 
+            ? {
+                ...sheet,
+                cells: {
+                  ...sheet.cells,
+                  [`${row}-${col}`]: previousValue
+                }
+              }
+            : sheet
+        ));
+        break;
+        
+      case 'column_header_update':
+        const { colIndex, previousName } = action.data;
+        setSheets(prev => prev.map(sheet => 
+          sheet.id === activeSheetId 
+            ? {
+                ...sheet,
+                columnHeaders: sheet.columnHeaders.map((header, index) => 
+                  index === colIndex ? previousName : header
+                )
+              }
+            : sheet
+        ));
+        break;
+        
+      case 'add_column':
+        setSheets(prev => prev.map(sheet => 
+          sheet.id === activeSheetId 
+            ? {
+                ...sheet,
+                columnHeaders: sheet.columnHeaders.slice(0, -1)
+              }
+            : sheet
+        ));
+        break;
+        
+      case 'add_row':
+        setRowCount(prev => prev - 1);
+        break;
+    }
+    
+    setHistoryIndex(prev => prev - 1);
+  };
+
   const updateCell = (row: number, col: number, value: string) => {
+    const previousValue = activeSheet.cells[`${row}-${col}`] || "";
+    
+    // Only add to history if the value actually changed
+    if (previousValue !== value) {
+      addToHistory({
+        type: 'cell_update',
+        data: { row, col, previousValue, newValue: value },
+        timestamp: Date.now()
+      });
+    }
+    
     setSheets(prev => prev.map(sheet => 
       sheet.id === activeSheetId 
         ? {
@@ -61,6 +150,17 @@ const Index = () => {
   };
 
   const updateColumnHeader = (colIndex: number, newName: string) => {
+    const previousName = activeSheet.columnHeaders[colIndex];
+    
+    // Only add to history if the name actually changed
+    if (previousName !== newName) {
+      addToHistory({
+        type: 'column_header_update',
+        data: { colIndex, previousName, newName },
+        timestamp: Date.now()
+      });
+    }
+    
     setSheets(prev => prev.map(sheet => 
       sheet.id === activeSheetId 
         ? {
@@ -74,6 +174,12 @@ const Index = () => {
   };
 
   const addNewColumn = () => {
+    addToHistory({
+      type: 'add_column',
+      data: { columnCount: activeSheet.columnHeaders.length },
+      timestamp: Date.now()
+    });
+    
     setSheets(prev => prev.map(sheet => 
       sheet.id === activeSheetId 
         ? {
@@ -85,6 +191,12 @@ const Index = () => {
   };
 
   const addNewRow = () => {
+    addToHistory({
+      type: 'add_row',
+      data: { previousRowCount: rowCount },
+      timestamp: Date.now()
+    });
+    
     setRowCount(prev => prev + 1);
   };
 
@@ -167,11 +279,42 @@ const Index = () => {
     }
   }, [isResizing, handleMouseMove, handleMouseUp]);
 
+  // Add keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if Ctrl+Z (Windows) or Cmd+Z (Mac) is pressed
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [historyIndex, history]);
+
   return (
     <div className="flex flex-col h-screen bg-background">
       {/* Title Header */}
       <header className="border-b border-border bg-card px-6 py-4">
-        <h1 className="text-2xl font-semibold text-foreground">Interactive Spreadsheet</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold text-foreground">Interactive Spreadsheet</h1>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={undo}
+              disabled={historyIndex < 0}
+              className="flex items-center gap-2"
+            >
+              <Undo className="w-4 h-4" />
+              Undo
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              Ctrl+Z / ⌘+Z
+            </span>
+          </div>
+        </div>
       </header>
 
       {/* Main Content */}
