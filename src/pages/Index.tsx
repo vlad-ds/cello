@@ -68,6 +68,22 @@ const Index = () => {
     ));
   };
 
+  const addNewColumn = () => {
+    setSheets(prev => prev.map(sheet => 
+      sheet.id === activeSheetId 
+        ? {
+            ...sheet,
+            columnHeaders: [...sheet.columnHeaders, `COLUMN_${sheet.columnHeaders.length + 1}`]
+          }
+        : sheet
+    ));
+  };
+
+  const addNewRow = () => {
+    // For now, just show feedback - could extend to increase ROWS constant or add dynamic row management
+    console.log("Add new row functionality - can be extended for dynamic rows");
+  };
+
   const addNewSheet = () => {
     const newId = `sheet${sheets.length + 1}`;
     const newSheet: SheetData = {
@@ -158,6 +174,8 @@ const Index = () => {
               onSelectionChange={setSelection}
               onCellUpdate={updateCell}
               onColumnHeaderUpdate={updateColumnHeader}
+              onAddColumn={addNewColumn}
+              onAddRow={addNewRow}
             />
           </div>
         </div>

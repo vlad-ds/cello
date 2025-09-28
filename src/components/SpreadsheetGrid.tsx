@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Cell } from "./Cell";
 import { SheetData, CellSelection } from "@/pages/Index";
 
@@ -8,6 +10,8 @@ interface SpreadsheetGridProps {
   onSelectionChange: (selection: CellSelection) => void;
   onCellUpdate: (row: number, col: number, value: string) => void;
   onColumnHeaderUpdate: (colIndex: number, newName: string) => void;
+  onAddColumn: () => void;
+  onAddRow: () => void;
 }
 
 export const SpreadsheetGrid = ({
@@ -16,6 +20,8 @@ export const SpreadsheetGrid = ({
   onSelectionChange,
   onCellUpdate,
   onColumnHeaderUpdate,
+  onAddColumn,
+  onAddRow,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
@@ -162,6 +168,18 @@ export const SpreadsheetGrid = ({
               onEdit={(value) => handleHeaderEdit(colIndex, value)}
             />
           ))}
+          
+          {/* Add Column Button */}
+          <div className="w-12 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center">
+            <Button
+              onClick={onAddColumn}
+              size="sm"
+              variant="ghost"
+              className="h-6 w-6 p-0 hover:bg-grid-selected/50 rounded-sm"
+            >
+              <Plus className="w-3 h-3 text-muted-foreground hover:text-primary" />
+            </Button>
+          </div>
         </div>
 
         {/* Data Rows */}
@@ -189,6 +207,25 @@ export const SpreadsheetGrid = ({
             ))}
           </div>
         ))}
+
+        {/* Add Row Button Row */}
+        <div className="flex">
+          <div className="w-16 h-8 bg-grid-header border-r border-b border-grid-border flex items-center justify-center">
+            <Button
+              onClick={onAddRow}
+              size="sm"
+              variant="ghost"
+              className="h-6 w-6 p-0 hover:bg-grid-selected/50 rounded-sm"
+            >
+              <Plus className="w-3 h-3 text-muted-foreground hover:text-primary" />
+            </Button>
+          </div>
+          {/* Empty cells for alignment */}
+          {Array.from({ length: COLS }, (_, colIndex) => (
+            <div key={`add-row-${colIndex}`} className="w-24 h-8 border-r border-b border-grid-border bg-grid-hover/30" />
+          ))}
+          <div className="w-12 h-8 border-r border-b border-grid-border bg-grid-hover/30" />
+        </div>
       </div>
     </div>
   );
