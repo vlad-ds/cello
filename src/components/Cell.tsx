@@ -49,6 +49,7 @@ export const Cell = ({
   }, [isEditing]);
 
   const handleSubmit = () => {
+    console.log('Cell submit - original value:', value, 'edit value:', editValue);
     onEdit?.(editValue);
   };
 
