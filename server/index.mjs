@@ -987,11 +987,11 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
       .join('\n')
       .trim();
 
-  const buildRequestPayload = (conversationContents) => ({
-    systemInstruction: {
-      role: 'system',
-      parts: [{ text: systemInstructionText }],
-    },
+const buildRequestPayload = (conversationContents) => ({
+  systemInstruction: {
+    role: 'system',
+    parts: [{ text: systemInstructionText }],
+  },
     contents: conversationContents,
     tools: toolDefinitions,
     toolConfig: {
@@ -1009,6 +1009,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     let pendingText = '';
     const maxIterations = 4;
     let iteration = 0;
+    let lastCandidate = null;
 
     while (iteration < maxIterations) {
       iteration += 1;
@@ -1029,18 +1030,20 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
       if (!response.ok) {
         const errorBody = await response.json().catch(() => null);
         const message = errorBody?.error?.message || 'Gemini API request failed.';
-        deleteChatMessage(userMessage.id);
         return res.status(response.status).json({ error: message });
       }
 
       const data = await response.json();
       const candidate = data?.candidates?.[0];
+      lastCandidate = candidate ?? lastCandidate;
       const candidateContent = candidate?.content ?? null;
       const candidateParts = candidateContent?.parts ?? [];
       const textFromParts = getTextFromParts(candidateParts);
       if (textFromParts) {
         pendingText = textFromParts;
       }
+
+      const finishReason = candidate?.finishReason || candidate?.finish_reason;
 
       const functionCallPart =
         candidateParts.find((part) => part?.functionCall || part?.function_call) ?? null;
@@ -1225,7 +1228,20 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
           assistantText = `Query complete. Returned ${rows} row${rows === 1 ? '' : 's'}.`;
         }
       } else {
-        assistantText = "I couldn't produce a response for that request.";
+        const failureDetails = [];
+        if (lastCandidate?.finishReason) {
+          failureDetails.push(`finish reason: ${lastCandidate.finishReason}`);
+        }
+        const blockedCategories = lastCandidate?.safetyRatings
+          ?.filter((rating) => rating?.blocked)
+          ?.map((rating) => rating.category)
+          ?.filter(Boolean);
+        if (blockedCategories && blockedCategories.length > 0) {
+          failureDetails.push(`blocked by safety filters (${blockedCategories.join(', ')})`);
+        }
+        assistantText = failureDetails.length
+          ? `I couldn't produce a response. ${failureDetails.join('; ')}.`
+          : "I couldn't produce a response for that request.";
       }
     }
 
@@ -1245,7 +1261,6 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     });
   } catch (error) {
     console.error('Gemini chat request failed', error);
-    deleteChatMessage(userMessage.id);
     res.status(500).json({ error: 'Failed to generate response.' });
   }
 });
