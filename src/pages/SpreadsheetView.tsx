@@ -151,6 +151,8 @@ const SpreadsheetView = () => {
   const updateCell = async (row: number, col: number, value: string) => {
     if (!activeSheet) return;
     
+    const normalizedValue = value == null ? '' : String(value);
+
     const action: Action = {
       type: 'cell_update',
       data: {
@@ -158,7 +160,7 @@ const SpreadsheetView = () => {
         row,
         col,
         oldValue: activeSheet.cells[`${row}-${col}`] || "",
-        newValue: value
+        newValue: normalizedValue
       },
       timestamp: Date.now()
     };
@@ -170,20 +172,20 @@ const SpreadsheetView = () => {
       prevSheets.map(sheet => {
         if (sheet.id === activeSheet.id) {
           const newCells = { ...sheet.cells };
-          if (value.trim() === "") {
+          if (normalizedValue.trim() === "") {
             delete newCells[`${row}-${col}`];
           } else {
-            newCells[`${row}-${col}`] = value;
+            newCells[`${row}-${col}`] = normalizedValue;
           }
           return { ...sheet, cells: newCells };
         }
         return sheet;
       })
     );
-    
+
     // Sync to database (headers use row 0; data rows follow same zero-based index)
     try {
-      await syncCell(activeSheet.id, row + 1, col, value);
+      await syncCell(activeSheet.id, row + 1, col, normalizedValue);
     } catch (error) {
       console.error('Error syncing cell to database:', error);
     }
@@ -191,6 +193,8 @@ const SpreadsheetView = () => {
 
   const updateColumnHeader = async (colIndex: number, newHeader: string) => {
     if (!activeSheet) return;
+
+    const normalizedHeader = newHeader == null ? '' : String(newHeader);
     
     const action: Action = {
       type: 'column_header_update',
@@ -198,7 +202,7 @@ const SpreadsheetView = () => {
         sheetId: activeSheet.id,
         col: colIndex,
         oldValue: activeSheet.columnHeaders[colIndex],
-        newValue: newHeader
+        newValue: normalizedHeader
       },
       timestamp: Date.now()
     };
@@ -210,7 +214,7 @@ const SpreadsheetView = () => {
       prevSheets.map(sheet => {
         if (sheet.id === activeSheet.id) {
           const newHeaders = [...sheet.columnHeaders];
-          newHeaders[colIndex] = newHeader;
+          newHeaders[colIndex] = normalizedHeader;
           return { ...sheet, columnHeaders: newHeaders };
         }
         return sheet;
@@ -219,7 +223,7 @@ const SpreadsheetView = () => {
     
     // Sync header to database by updating the first row (row 0)
     try {
-      await syncCell(activeSheet.id, 0, colIndex, newHeader); // Use row 0 for headers
+      await syncCell(activeSheet.id, 0, colIndex, normalizedHeader); // Use row 0 for headers
     } catch (error) {
       console.error('Error syncing column header to database:', error);
     }
@@ -486,7 +490,8 @@ const SpreadsheetView = () => {
     for (let row = minRow; row <= maxRow; row++) {
       for (let col = minCol; col <= maxCol; col++) {
         const cellKey = `${row}-${col}`;
-        const cellValue = activeSheet.cells[cellKey] || "";
+        const rawValue = activeSheet.cells[cellKey];
+        const cellValue = rawValue === undefined || rawValue === null ? '' : String(rawValue);
         if (cellValue.trim()) {
           const columnLetter = String.fromCharCode(65 + col);
           const readableKey = `${columnLetter}${row + 1}`;
