@@ -26,6 +26,7 @@ export interface ToolCallRecord {
   name: string;
   sheetId?: string;
   sheetName?: string;
+  reference?: string | null;
   sql?: string;
   status?: 'ok' | 'error';
   rowCount?: number;

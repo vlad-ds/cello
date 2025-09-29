@@ -190,12 +190,23 @@ const getSheetById = (sheetId) => {
   return db.prepare('SELECT id, spreadsheet_id, name FROM sheets WHERE id = ?').get(sheetId);
 };
 
+const slugifySheetName = (name) => {
+  return name
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036F]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'sheet';
+};
+
 const listSheetsForSpreadsheet = (spreadsheetId) => {
   return db
     .prepare('SELECT id, name FROM sheets WHERE spreadsheet_id = ? ORDER BY datetime(created_at)')
     .all(spreadsheetId)
     .map((sheet) => ({
       ...sheet,
+      slug: slugifySheetName(sheet.name),
       columns: getSheetColumns(sheet.id),
     }));
 };
@@ -212,12 +223,50 @@ const buildSheetMetadataSummary = (spreadsheetId) => {
           .map((column) => `${column.header} → "${column.sql_name}"`)
           .join(', ')
       : 'No headers yet. Default SQL names: "column_1", "column_2", ...';
-    return `${sheet.name} (sheetId: ${sheet.id}, table: "${tableName}") columns: ${columnSummaries}`;
+    return `${sheet.name} (sheetId: ${sheet.id}, ref: context.spreadsheet.sheets["${sheet.name}"], alias: context.spreadsheet.sheets["${sheet.slug}"] → table "${tableName}") columns: ${columnSummaries}`;
   });
   return {
     sheets,
     summaryText: lines.join('\n'),
   };
+};
+
+const resolveSheetReference = (sheetMetas, rawValue) => {
+  if (!rawValue || typeof rawValue !== 'string') {
+    return null;
+  }
+
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const direct = sheetMetas.find((sheet) => sheet.id === trimmed);
+  if (direct) {
+    return { sheet: direct, reference: trimmed };
+  }
+
+  const contextMatch = trimmed.match(/context\.spreadsheet\.sheets\[\s*['"](.+?)['"]\s*\]/i);
+  const extracted = contextMatch ? contextMatch[1] : trimmed.replace(/^['"]|['"]$/g, '');
+  const candidate = extracted.trim();
+
+  if (!candidate) {
+    return null;
+  }
+
+  const normalized = candidate.toLowerCase();
+
+  const byName = sheetMetas.find((sheet) => sheet.name.toLowerCase() === normalized);
+  if (byName) {
+    return { sheet: byName, reference: trimmed };
+  }
+
+  const bySlug = sheetMetas.find((sheet) => sheet.slug === normalized || sheet.slug === slugifySheetName(candidate));
+  if (bySlug) {
+    return { sheet: bySlug, reference: trimmed };
+  }
+
+  return null;
 };
 
 const createHeaderFromSqlName = (sqlName, fallbackIndex) => {
@@ -665,6 +714,13 @@ app.post('/spreadsheets/:id/sheets', (req, res) => {
     return res.status(404).json({ error: 'Spreadsheet not found.' });
   }
 
+  const existing = db
+    .prepare('SELECT id FROM sheets WHERE spreadsheet_id = ? AND lower(name) = lower(?)')
+    .get(req.params.id, name.trim());
+  if (existing) {
+    return res.status(409).json({ error: 'A sheet with that name already exists in this spreadsheet.' });
+  }
+
   const id = randomUUID();
   const timestamp = now();
   db.prepare(
@@ -686,6 +742,13 @@ app.patch('/sheets/:id', (req, res) => {
   const sheet = db.prepare('SELECT spreadsheet_id FROM sheets WHERE id = ?').get(req.params.id);
   if (!sheet) {
     return res.status(404).json({ error: 'Sheet not found.' });
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM sheets WHERE spreadsheet_id = ? AND lower(name) = lower(?) AND id != ?')
+    .get(sheet.spreadsheet_id, name.trim(), req.params.id);
+  if (existing) {
+    return res.status(409).json({ error: 'A sheet with that name already exists in this spreadsheet.' });
   }
 
   db.prepare('UPDATE sheets SET name = ? WHERE id = ?').run(name.trim(), req.params.id);
@@ -819,14 +882,20 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
 
   const { sheets: sheetMetas, summaryText: sheetSummary } = buildSheetMetadataSummary(req.params.id);
 
-  const sheetIdList = sheetMetas.map((sheet) => `${sheet.name} (${sheet.id})`).join(', ');
+  const sheetReferenceList = sheetMetas
+    .map(
+      (sheet) =>
+        `${sheet.name}: context.spreadsheet.sheets["${sheet.name}"] | context.spreadsheet.sheets["${sheet.slug}"] (sheetId ${sheet.id})`
+    )
+    .join('; ');
 
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
     'You may call the function `executeSheetSql` to run a read-only SQL query on a sheet table when and only when the user explicitly instructs you to run SQL or asks for a SQL query execution.',
-    'When you call the function, supply the `sheetId` and a single SELECT statement that references the sheet table name in the format `"sheet_<sheetId>"`. Wrap table and column identifiers in double quotes.',
+    'When you call a function, include a single SQL statement that references the sheet table name in the format `"sheet_<sheetId>"`. Wrap table and column identifiers in double quotes.',
     'Use the function `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements that reference the provided sheet table.',
     'If a function call fails, analyze the error message and try an alternative SQL approach automatically before giving up, unless no safe fix exists.',
+    'When calling a function, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
     'Each sheet table contains a `row_number` column in addition to the columns listed below. Summarize tool results for the user instead of pasting large tables verbatim. If the tool response reports an error or indicates truncation, explain that to the user.',
   ].join('\n\n');
 
@@ -863,11 +932,11 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
           parameters: {
             type: 'object',
             properties: {
-              sheetId: {
+              sheet: {
                 type: 'string',
-                description: sheetIdList
-                  ? `ID of the sheet to query. Choose from: ${sheetIdList}.`
-                  : 'ID of the sheet to query.',
+                description: sheetReferenceList
+                  ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+                  : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
               },
               sql: {
                 type: 'string',
@@ -875,7 +944,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
                   'A single SELECT SQL statement targeting the sheet table. Wrap identifiers in double quotes and reference the table as "sheet_<sheetId>".',
               },
             },
-            required: ['sheetId', 'sql'],
+            required: ['sheet', 'sql'],
           },
         },
         {
@@ -885,11 +954,11 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
           parameters: {
             type: 'object',
             properties: {
-              sheetId: {
+              sheet: {
                 type: 'string',
-                description: sheetIdList
-                  ? `ID of the sheet to mutate. Choose from: ${sheetIdList}.`
-                  : 'ID of the sheet to mutate.',
+                description: sheetReferenceList
+                  ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+                  : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
               },
               sql: {
                 type: 'string',
@@ -897,7 +966,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
                   'An UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN SQL statement targeting the sheet table ("sheet_<sheetId>"). Wrap identifiers in double quotes.',
               },
             },
-            required: ['sheetId', 'sql'],
+            required: ['sheet', 'sql'],
           },
         },
       ],
@@ -1000,35 +1069,48 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
         }
       }
 
-      const sheetId = parsedArgs.sheetId || parsedArgs.sheet_id;
+      const sheetArg =
+        parsedArgs.sheet ??
+        parsedArgs.sheetRef ??
+        parsedArgs.sheetReference ??
+        parsedArgs.sheet_id ??
+        parsedArgs.sheetId ??
+        parsedArgs.target ??
+        parsedArgs.sheetName;
       const sql = parsedArgs.sql || parsedArgs.query || '';
       const trimmedSql = typeof sql === 'string' ? sql : '';
-      const sheetMeta = sheetMetas.find((sheet) => sheet.id === sheetId);
+      const resolvedSheet = resolveSheetReference(sheetMetas, sheetArg);
+      const sheetId = resolvedSheet?.sheet?.id || parsedArgs.sheetId || parsedArgs.sheet_id;
+      const sheetMeta = sheetMetas.find((sheet) => sheet.id === sheetId) || resolvedSheet?.sheet;
+      const sheetReferenceLabel = resolvedSheet?.reference ?? sheetArg ?? sheetId;
 
       let toolResultPayload = null;
       let toolCallRecord = null;
 
       try {
-        if (!sheetId || !trimmedSql.trim()) {
-          throw new Error('Both sheetId and sql are required for this tool call.');
+        if (!sheetMeta || !sheetMeta.id || !trimmedSql.trim()) {
+          throw new Error('Both sheet reference and sql are required for this tool call.');
         }
 
+        const targetSheetId = sheetMeta.id;
+
         if (callName === 'mutateSheetSql') {
-          const execution = executeSheetSqlMutation(req.params.id, sheetId, trimmedSql);
+          const execution = executeSheetSqlMutation(req.params.id, targetSheetId, trimmedSql);
           toolResultPayload = {
             ok: true,
-            sheetId,
+            sheetId: targetSheetId,
             sheetName: execution.sheet?.name,
             operation: execution.operation,
             changes: execution.changes,
             lastInsertRowid: execution.lastInsertRowid,
             addedColumns: execution.addedColumns,
+            sheetReference: sheetReferenceLabel,
           };
 
           toolCallRecord = {
             name: callName,
             kind: 'write',
-            sheetId,
+            sheetId: targetSheetId,
             sheetName: execution.sheet?.name,
             sql: trimmedSql,
             status: 'ok',
@@ -1036,6 +1118,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
             changes: execution.changes,
             lastInsertRowid: execution.lastInsertRowid,
             addedColumns: execution.addedColumns,
+            reference: sheetReferenceLabel,
           };
 
           if (execution.addedColumns?.length && sheetMeta) {
@@ -1049,21 +1132,22 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
             ];
           }
         } else if (callName === 'executeSheetSql') {
-          const execution = executeSheetSql(req.params.id, sheetId, trimmedSql);
+          const execution = executeSheetSql(req.params.id, targetSheetId, trimmedSql);
           toolResultPayload = {
             ok: true,
-            sheetId,
+            sheetId: targetSheetId,
             sheetName: execution.sheet?.name,
             rowCount: execution.rowCount,
             truncated: execution.truncated,
             columns: execution.columns,
             rows: execution.rows,
+            sheetReference: sheetReferenceLabel,
           };
 
           toolCallRecord = {
             name: callName,
             kind: 'read',
-            sheetId,
+            sheetId: targetSheetId,
             sheetName: execution.sheet?.name,
             sql: trimmedSql,
             status: 'ok',
@@ -1071,6 +1155,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
             rowCount: execution.rowCount,
             truncated: execution.truncated,
             columns: execution.columns,
+            reference: sheetReferenceLabel,
           };
         } else {
           throw new Error(`Unsupported function call: ${callName}`);
@@ -1079,20 +1164,22 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
         const isMutation = callName === 'mutateSheetSql';
         toolResultPayload = {
           ok: false,
-          sheetId,
+          sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
+          sheetReference: sheetReferenceLabel,
           error: toolError instanceof Error ? toolError.message : 'SQL execution failed.',
         };
 
         toolCallRecord = {
           name: callName,
           kind: isMutation ? 'write' : 'read',
-          sheetId,
+          sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
           sql: trimmedSql,
           status: 'error',
           operation: isMutation ? undefined : 'select',
           error: toolError instanceof Error ? toolError.message : String(toolError),
+          reference: sheetReferenceLabel,
         };
       }
 

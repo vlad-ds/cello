@@ -26,6 +26,7 @@ interface ToolCall {
   name?: string;
   sheetId?: string;
   sheetName?: string;
+  reference?: string | null;
   sql?: string;
   status?: "ok" | "error";
   rowCount?: number;
@@ -413,6 +414,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                             ? 'SQL mutation executed'
                             : 'SQL query executed';
                           const addedColumns = toolCall.addedColumns ?? [];
+                          const referenceLabel = toolCall.reference ?? toolCall.sheetId;
 
                           return (
                             <div
@@ -433,6 +435,12 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                                 </span>
                                 <Badge variant={badgeVariant}>{badgeLabel}</Badge>
                               </div>
+
+                              {referenceLabel && (
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  Reference: {referenceLabel}
+                                </p>
+                              )}
 
                               {hasRowInfo && toolCall.status !== 'error' && (
                                 <p className="mt-2 text-xs text-muted-foreground">
