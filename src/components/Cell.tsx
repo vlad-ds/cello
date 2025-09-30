@@ -1,18 +1,20 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import { cn } from "@/lib/utils";
 
 interface CellProps {
   value: string;
+  rowIndex?: number;
+  colIndex?: number;
   isHeader?: boolean;
   isSelected?: boolean;
   isEditing?: boolean;
   className?: string;
   style?: React.CSSProperties;
-  onMouseDown?: () => void;
-  onMouseEnter?: () => void;
-  onDoubleClick?: () => void;
-  onClick?: () => void;
-  onEdit?: (value: string) => void;
+  onMouseDown?: (row: number, col: number, event: React.MouseEvent<HTMLDivElement>) => void;
+  onMouseEnter?: (row: number, col: number, event: React.MouseEvent<HTMLDivElement>) => void;
+  onDoubleClick?: (row: number, col: number, event: React.MouseEvent<HTMLDivElement>) => void;
+  onClick?: (row: number, col: number, event: React.MouseEvent<HTMLDivElement>) => void;
+  onEdit?: (row: number, col: number, value: string) => void;
   onSelectionChange?: (selection: any) => void;
   selection?: any;
   ROWS?: number;
@@ -20,8 +22,10 @@ interface CellProps {
   highlightColor?: string;
 }
 
-export const Cell = ({
+const CellComponent = ({
   value,
+  rowIndex,
+  colIndex,
   isHeader = false,
   isSelected = false,
   isEditing = false,
@@ -53,7 +57,7 @@ export const Cell = ({
   }, [isEditing]);
 
   const handleSubmit = () => {
-    onEdit?.(editValue);
+    onEdit?.(rowIndex ?? -1, colIndex ?? -1, editValue);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -78,7 +82,7 @@ export const Cell = ({
       handleSubmit();
     } else if (e.key === "Escape") {
       setEditValue(value);
-      onEdit?.(value);
+      onEdit?.(rowIndex ?? -1, colIndex ?? -1, value);
     } else if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
       // Exit editing mode when arrow keys are pressed
       e.preventDefault();
@@ -103,7 +107,7 @@ export const Cell = ({
   };
 
   const cellClassName = cn(
-    "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell overflow-hidden relative",
+    "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell overflow-hidden relative pointer-events-auto",
     isHeader && "bg-grid-header text-grid-header-foreground font-medium cursor-text items-center",
     !isHeader && !isHighlighted && "bg-grid hover:bg-grid-hover",
     !isHeader && isHighlighted && getHighlightClasses(),
@@ -132,10 +136,12 @@ export const Cell = ({
     <div
       className={cellClassName}
       style={style}
-      onMouseDown={onMouseDown}
-      onMouseEnter={onMouseEnter}
-      onDoubleClick={onDoubleClick}
-      onClick={onClick}
+      data-row-index={rowIndex}
+      data-col-index={colIndex}
+      onMouseDown={(event) => onMouseDown?.(rowIndex ?? -1, colIndex ?? -1, event)}
+      onMouseEnter={(event) => onMouseEnter?.(rowIndex ?? -1, colIndex ?? -1, event)}
+      onDoubleClick={(event) => onDoubleClick?.(rowIndex ?? -1, colIndex ?? -1, event)}
+      onClick={(event) => onClick?.(rowIndex ?? -1, colIndex ?? -1, event)}
     >
       <span className={cn(
         "w-full leading-tight overflow-hidden",
@@ -146,3 +152,30 @@ export const Cell = ({
     </div>
   );
 };
+
+export const Cell = memo(CellComponent, (prevProps, nextProps) => {
+  const styleEqual =
+    prevProps.style === nextProps.style ||
+    (!!prevProps.style &&
+      !!nextProps.style &&
+      prevProps.style.width === nextProps.style.width &&
+      prevProps.style.height === nextProps.style.height);
+
+  return (
+    prevProps.value === nextProps.value &&
+    prevProps.rowIndex === nextProps.rowIndex &&
+    prevProps.colIndex === nextProps.colIndex &&
+    prevProps.isSelected === nextProps.isSelected &&
+    prevProps.isEditing === nextProps.isEditing &&
+    prevProps.isHeader === nextProps.isHeader &&
+    prevProps.isHighlighted === nextProps.isHighlighted &&
+    prevProps.highlightColor === nextProps.highlightColor &&
+    prevProps.className === nextProps.className &&
+    prevProps.onMouseDown === nextProps.onMouseDown &&
+    prevProps.onMouseEnter === nextProps.onMouseEnter &&
+    prevProps.onDoubleClick === nextProps.onDoubleClick &&
+    prevProps.onClick === nextProps.onClick &&
+    prevProps.onEdit === nextProps.onEdit &&
+    styleEqual
+  );
+});

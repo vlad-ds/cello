@@ -1122,7 +1122,7 @@ const SpreadsheetView = () => {
             </div>
 
             {/* Spreadsheet grid */}
-            <div ref={gridContainerRef} className="flex-1 overflow-auto">
+            <div ref={gridContainerRef} className="flex-1 relative">
               {activeSheet ? (
                 <SpreadsheetGrid
                   sheet={activeSheet}
