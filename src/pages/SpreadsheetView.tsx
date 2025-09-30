@@ -127,10 +127,7 @@ const SpreadsheetView = () => {
           // Import the data
           const { data, sheetId } = pendingImport;
 
-          // Create table with correct number of columns
-          await createDynamicTable(sheetId, data.headers.length);
-
-          // Use bulk import for efficiency
+          // Use bulk import for efficiency (will create columns from headers)
           await dataClient.importBulkData(sheetId, data.headers, data.rows);
 
           // Reload to show the imported data

@@ -1036,6 +1036,13 @@ app.post('/sheets/:id/import-data', (req, res) => {
     return res.status(400).json({ error: 'Headers and rows arrays are required.' });
   }
 
+  console.log('Import data received:', {
+    headerCount: headers.length,
+    headers: headers,
+    rowCount: rows.length,
+    firstRowLength: rows[0]?.length
+  });
+
   const sheet = db.prepare('SELECT spreadsheet_id FROM sheets WHERE id = ?').get(req.params.id);
   if (!sheet) {
     return res.status(404).json({ error: 'Sheet not found.' });
@@ -1060,7 +1067,7 @@ app.post('/sheets/:id/import-data', (req, res) => {
         return finalName;
       });
 
-      // Create columns if they don't exist
+      // Create columns from headers
       const existingCols = db.prepare(`PRAGMA table_info("${tableName}")`).all();
       const existingColNames = new Set(existingCols.map(c => c.name));
 
@@ -1075,7 +1082,14 @@ app.post('/sheets/:id/import-data', (req, res) => {
         const row = rows[rowIdx];
         const rowNumber = rowIdx + 1;
 
-        const values = row.slice(0, sqlColumns.length);
+        // Build values array, using null for missing/empty values
+        const values = [];
+        for (let i = 0; i < sqlColumns.length; i++) {
+          const value = row[i];
+          // Use null for undefined/null/empty string
+          values.push((value !== undefined && value !== null && value !== '') ? value : null);
+        }
+
         const cols = sqlColumns.map(c => `"${c}"`).join(', ');
         const placeholders = values.map(() => '?').join(', ');
 
