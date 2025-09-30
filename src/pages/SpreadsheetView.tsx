@@ -581,16 +581,12 @@ const SpreadsheetView = () => {
       refreshActiveSheetFromServer();
     }
 
-    // Handle highlight clear
+    // Handle highlight clear - if present, start fresh instead of appending
     const hasClear = toolCalls.some(call => call?.kind === 'highlight_clear' && call.status === 'ok');
-    if (hasClear) {
-      setActiveHighlights([]);
-      return;
-    }
 
     // Handle cell highlights - collect all highlight calls
     const highlightCalls = toolCalls.filter(call => call?.kind === 'highlight' && call.status === 'ok');
-    if (highlightCalls.length > 0) {
+    if (hasClear || highlightCalls.length > 0) {
       const newHighlights = highlightCalls
         .filter(call => call.sheetId && (call.range || (call.column && call.values)))
         .map(call => ({
@@ -602,7 +598,8 @@ const SpreadsheetView = () => {
           message: call.message || null,
         }));
 
-      setActiveHighlights(prev => [...prev, ...newHighlights]);
+      // If clear was called, replace all highlights; otherwise append
+      setActiveHighlights(hasClear ? newHighlights : prev => [...prev, ...newHighlights]);
     }
   };
 
