@@ -36,8 +36,22 @@ const SpreadsheetView = () => {
   const [chatPanelWidth, setChatPanelWidth] = useState(480);
   const [isResizing, setIsResizing] = useState(false);
   const [rowCount, setRowCount] = useState(20);
-  const [columnWidths, setColumnWidths] = useState<{[key: string]: number}>({});
-  const [rowHeights, setRowHeights] = useState<{[key: string]: number}>({});
+  const [columnWidths, setColumnWidths] = useState<{[key: string]: number}>(() => {
+    try {
+      const saved = localStorage.getItem('columnWidths');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [rowHeights, setRowHeights] = useState<{[key: string]: number}>(() => {
+    try {
+      const saved = localStorage.getItem('rowHeights');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
   const [history, setHistory] = useState<Action[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(true);
@@ -643,6 +657,13 @@ const SpreadsheetView = () => {
   const handleAssistantToolCalls = (toolCalls: ToolCall[] | null | undefined) => {
     if (!toolCalls || toolCalls.length === 0) return;
 
+    // Handle new sheet creation - reload entire spreadsheet to pick up new sheets
+    const hasNewSheet = toolCalls.some(call => (call?.kind === 'create_sheet' || call?.kind === 'create_table_as') && call.status === 'ok');
+    if (hasNewSheet) {
+      loadSpreadsheet();
+      return; // Full reload will handle everything
+    }
+
     // Handle data mutations - refresh the sheet
     const hasMutation = toolCalls.some(call => (call?.kind === 'write' || call?.kind === 'delete') && call.status === 'ok');
     if (hasMutation) {
@@ -761,25 +782,33 @@ const SpreadsheetView = () => {
   };
 
   const updateColumnWidth = (colIndex: number, width: number) => {
-    setColumnWidths(prev => ({
-      ...prev,
-      [`${activeSheetId}-${colIndex}`]: Math.max(60, width)
-    }));
+    setColumnWidths(prev => {
+      const updated = {
+        ...prev,
+        [`${activeSheetId}-${colIndex}`]: Math.max(60, width)
+      };
+      localStorage.setItem('columnWidths', JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const updateRowHeight = (rowIndex: number, height: number) => {
-    setRowHeights(prev => ({
-      ...prev,
-      [`${activeSheetId}-${rowIndex}`]: Math.max(24, height)
-    }));
+    setRowHeights(prev => {
+      const updated = {
+        ...prev,
+        [`${activeSheetId}-${rowIndex}`]: Math.max(24, height)
+      };
+      localStorage.setItem('rowHeights', JSON.stringify(updated));
+      return updated;
+    });
   };
 
   const getColumnWidth = (colIndex: number) => {
-    return columnWidths[`${activeSheetId}-${colIndex}`] || 96;
+    return columnWidths[`${activeSheetId}-${colIndex}`] || 200;
   };
 
   const getRowHeight = (rowIndex: number) => {
-    return rowHeights[`${activeSheetId}-${rowIndex}`] || 32;
+    return rowHeights[`${activeSheetId}-${rowIndex}`] || 40;
   };
 
   // Resize functionality
@@ -894,7 +923,14 @@ const SpreadsheetView = () => {
         >
           {/* Coordinate display */}
           <div className="border-b border-border bg-card/30 px-4 py-2">
-            <CoordinateDisplay selection={selection} />
+            <CoordinateDisplay
+              selection={selection}
+              cellContent={
+                activeSheet && selection.start.row === selection.end.row && selection.start.col === selection.end.col
+                  ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
+                  : undefined
+              }
+            />
           </div>
 
           {/* Spreadsheet grid */}
@@ -942,6 +978,7 @@ const SpreadsheetView = () => {
           <ChatPanel
             selectedCells={getSelectedCellsContent()}
             spreadsheetId={spreadsheetId}
+            activeSheetId={activeSheet?.id}
             onCommand={handleChatCommand}
             onAssistantToolCalls={handleAssistantToolCalls}
             highlights={activeHighlights}

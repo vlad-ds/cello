@@ -126,7 +126,7 @@ export const sqliteDataClient: DataClient = {
 
   async sendChatMessage(
     spreadsheetId: string,
-    payload: { query: string; selectedCells?: Record<string, string> }
+    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
   ): Promise<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }> {
     const data = await request<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }>(
       `/spreadsheets/${spreadsheetId}/chat`,

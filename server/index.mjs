@@ -5,6 +5,7 @@ import fs from 'fs';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,6 +36,129 @@ db.pragma('foreign_keys = ON');
 
 const readOnlyDb = new Database(dbPath, { readonly: true, fileMustExist: true });
 readOnlyDb.pragma('foreign_keys = ON');
+
+// Register AI() SQL function
+const callAiSync = (prompt, schemaType = null) => {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY not configured');
+  }
+
+  const timestamp = new Date().toISOString();
+  logToFile('ai-function-request', {
+    timestamp,
+    prompt: prompt?.substring(0, 500) + (prompt?.length > 500 ? '...' : ''),
+    promptLength: prompt?.length || 0,
+    schemaType,
+  });
+
+  // Build generationConfig with optional responseSchema
+  const generationConfig = {
+    temperature: 0.3,
+    topK: 32,
+    topP: 0.9,
+    maxOutputTokens: schemaType === 'boolean' ? 10 : 1024,
+  };
+
+  // Add responseSchema if schemaType is provided
+  if (schemaType === 'boolean') {
+    generationConfig.responseMimeType = 'application/json';
+    generationConfig.responseSchema = {
+      type: 'object',
+      properties: {
+        answer: {
+          type: 'boolean',
+          description: 'The boolean answer to the question'
+        }
+      },
+      required: ['answer']
+    };
+  } else if (schemaType && schemaType.startsWith('[') && schemaType.endsWith(']')) {
+    // Parse enum array from schema like "['yes','no','maybe']"
+    try {
+      const enumValues = JSON.parse(schemaType.replace(/'/g, '"'));
+      generationConfig.responseMimeType = 'application/json';
+      generationConfig.responseSchema = {
+        type: 'object',
+        properties: {
+          answer: {
+            type: 'string',
+            enum: enumValues,
+            description: 'The answer selected from the allowed values'
+          }
+        },
+        required: ['answer']
+      };
+      generationConfig.maxOutputTokens = 50;
+    } catch (e) {
+      // Invalid enum format, fall back to text
+    }
+  }
+
+  const payload = JSON.stringify({
+    contents: [{
+      role: 'user',
+      parts: [{ text: String(prompt) }],
+    }],
+    generationConfig,
+  });
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  try {
+    const curlCommand = `curl -s -X POST "${url}" -H "Content-Type: application/json" -d '${payload.replace(/'/g, "'\\''")}'`;
+    const response = execSync(curlCommand, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+    const data = JSON.parse(response);
+
+    const text = data?.candidates?.[0]?.content?.parts
+      ?.map(part => part.text)
+      ?.filter(Boolean)
+      ?.join('\n')
+      ?.trim() || '';
+
+    // If we used a schema, parse the JSON response and extract the answer
+    let finalResult = text;
+    if (schemaType && text) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed.answer !== undefined) {
+          finalResult = String(parsed.answer);
+        }
+      } catch (e) {
+        // Keep original text if JSON parsing fails
+      }
+    }
+
+    logToFile('ai-function-response', {
+      timestamp,
+      prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
+      response: finalResult?.substring(0, 500) + (finalResult?.length > 500 ? '...' : ''),
+      responseLength: finalResult?.length || 0,
+      schemaType,
+    });
+
+    return finalResult;
+  } catch (error) {
+    logToFile('ai-function-error', {
+      timestamp,
+      prompt: prompt?.substring(0, 200),
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      schemaType,
+    });
+    throw new Error(`AI function failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
+
+// Register on both database connections with varargs support
+db.function('AI', { deterministic: false, varargs: true }, (...args) => {
+  const [prompt, schemaType] = args;
+  return callAiSync(prompt, schemaType || null);
+});
+readOnlyDb.function('AI', { deterministic: false, varargs: true }, (...args) => {
+  const [prompt, schemaType] = args;
+  return callAiSync(prompt, schemaType || null);
+});
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS spreadsheets (
@@ -450,6 +574,108 @@ const executeSheetSql = (spreadsheetId, sheetId, rawSql) => {
   };
 };
 
+const executeCreateTableAs = (spreadsheetId, rawSql) => {
+  if (!rawSql || typeof rawSql !== 'string' || !rawSql.trim()) {
+    throw new Error('SQL statement is required.');
+  }
+
+  const spreadsheet = db.prepare('SELECT id FROM spreadsheets WHERE id = ?').get(spreadsheetId);
+  if (!spreadsheet) {
+    throw new Error('Spreadsheet not found.');
+  }
+
+  // Parse CREATE TABLE AS statement to extract target sheet name
+  const createTablePattern = /CREATE\s+TABLE\s+context\.spreadsheet\.sheets\[['"]([^'"]+)['"]\]\s+AS\s+(SELECT\s+.+)/is;
+  const match = rawSql.trim().match(createTablePattern);
+
+  if (!match) {
+    throw new Error('Invalid CREATE TABLE AS syntax. Use: CREATE TABLE context.spreadsheet.sheets["SheetName"] AS SELECT ...');
+  }
+
+  const newSheetName = match[1];
+  const selectQuery = match[2];
+
+  // Check if sheet already exists
+  const existing = db
+    .prepare('SELECT id FROM sheets WHERE spreadsheet_id = ? AND lower(name) = lower(?)')
+    .get(spreadsheetId, newSheetName.trim());
+  if (existing) {
+    throw new Error(`Sheet "${newSheetName}" already exists. Use a different name or delete the existing sheet first.`);
+  }
+
+  // Create sheet metadata WITHOUT calling ensureSheetTable (we'll create the table ourselves)
+  const id = randomUUID();
+  const timestamp = now();
+  db.prepare(
+    'INSERT INTO sheets (id, spreadsheet_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+  ).run(id, spreadsheetId, newSheetName.trim(), timestamp, timestamp);
+
+  const newSheet = db.prepare('SELECT * FROM sheets WHERE id = ?').get(id);
+  const newTableName = tableNameForSheet(newSheet.id);
+
+  // Get all existing sheets to rewrite references in the SELECT part
+  const allSheets = db.prepare('SELECT id, name FROM sheets WHERE spreadsheet_id = ?').all(spreadsheetId);
+  const sheetMetas = allSheets.map(s => ({
+    id: s.id,
+    name: s.name,
+    slug: slugifySheetName(s.name),
+    columns: []
+  }));
+
+  // Rewrite sheet references in the SELECT query
+  let rewrittenSelect = selectQuery;
+  const refPattern = /context\.spreadsheet\.sheets\[['"]([^'"]+)['"]\]/gi;
+  rewrittenSelect = rewrittenSelect.replace(refPattern, (match, sheetRef) => {
+    const targetSheet = sheetMetas.find(
+      s => s.name === sheetRef || s.slug === sheetRef || s.id === sheetRef
+    );
+    if (targetSheet) {
+      return `"${tableNameForSheet(targetSheet.id)}"`;
+    }
+    return match;
+  });
+
+  // Execute CREATE TABLE AS with rewritten references
+  const finalSql = `CREATE TABLE "${newTableName}" AS ${rewrittenSelect}`;
+  db.prepare(finalSql).run();
+
+  // Infer columns from the newly created table
+  const columns = db.prepare(`PRAGMA table_info("${newTableName}")`).all();
+  const columnNames = columns
+    .filter(col => col.name !== 'row_number' && !col.name.startsWith('column_'))
+    .map(col => col.name);
+
+  // Register columns in sheet_columns
+  columnNames.forEach((colName, index) => {
+    const sqlName = sanitizeSqlIdentifier(colName, defaultSqlName(index));
+    const header = colName;
+    db.prepare(
+      'INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name) VALUES (?, ?, ?, ?)'
+    ).run(newSheet.id, index, header, sqlName);
+  });
+
+  // Add row_number column if it doesn't exist
+  const hasRowNumber = columns.some(col => col.name === 'row_number');
+  if (!hasRowNumber) {
+    db.prepare(`ALTER TABLE "${newTableName}" ADD COLUMN row_number INTEGER`).run();
+    // Set row numbers for existing rows
+    db.prepare(`UPDATE "${newTableName}" SET row_number = rowid`).run();
+  }
+
+  touchSpreadsheet(spreadsheetId);
+  touchSheet(newSheet.id);
+
+  const rowCount = db.prepare(`SELECT COUNT(*) as count FROM "${newTableName}"`).get().count;
+
+  return {
+    sheet: newSheet,
+    tableName: newTableName,
+    operation: 'create_table_as',
+    rowCount,
+    columns: columnNames,
+  };
+};
+
 const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
   if (!rawSql || typeof rawSql !== 'string' || !rawSql.trim()) {
     throw new Error('SQL statement is required.');
@@ -710,6 +936,61 @@ const removeColumn = (sheetId, columnIndex) => {
     .run(sheetId, columnIndex);
 };
 
+const createSheet = (spreadsheetId, name, columns = null) => {
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    throw new Error('Sheet name is required.');
+  }
+
+  const spreadsheet = db.prepare('SELECT id FROM spreadsheets WHERE id = ?').get(spreadsheetId);
+  if (!spreadsheet) {
+    throw new Error('Spreadsheet not found.');
+  }
+
+  const existing = db
+    .prepare('SELECT id FROM sheets WHERE spreadsheet_id = ? AND lower(name) = lower(?)')
+    .get(spreadsheetId, name.trim());
+  if (existing) {
+    throw new Error('A sheet with that name already exists in this spreadsheet.');
+  }
+
+  const id = randomUUID();
+  const timestamp = now();
+  db.prepare(
+    'INSERT INTO sheets (id, spreadsheet_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+  ).run(id, spreadsheetId, name.trim(), timestamp, timestamp);
+
+  ensureSheetTable(id);
+
+  // If columns are provided, create them
+  if (columns && Array.isArray(columns) && columns.length > 0) {
+    const tableName = tableNameForSheet(id);
+    const existingSqlNames = new Set();
+
+    columns.forEach((columnName, index) => {
+      const header = columnName?.trim() || defaultHeader(index);
+      const baseSqlName = sanitizeSqlIdentifier(columnName, defaultSqlName(index));
+
+      let sqlName = baseSqlName;
+      let suffix = 1;
+      while (existingSqlNames.has(sqlName)) {
+        sqlName = `${baseSqlName}_${++suffix}`;
+      }
+
+      db.prepare(`ALTER TABLE "${tableName}" ADD COLUMN "${sqlName}" TEXT`).run();
+      db.prepare(
+        'INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name) VALUES (?, ?, ?, ?)'
+      ).run(id, index, header, sqlName);
+
+      existingSqlNames.add(sqlName);
+    });
+  }
+
+  touchSpreadsheet(spreadsheetId);
+
+  const record = db.prepare('SELECT * FROM sheets WHERE id = ?').get(id);
+  return record;
+};
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', gemini: Boolean(GEMINI_API_KEY) });
 });
@@ -755,28 +1036,18 @@ app.post('/spreadsheets/:id/sheets', (req, res) => {
     return res.status(400).json({ error: 'Name is required.' });
   }
 
-  const spreadsheet = db.prepare('SELECT id FROM spreadsheets WHERE id = ?').get(req.params.id);
-  if (!spreadsheet) {
-    return res.status(404).json({ error: 'Spreadsheet not found.' });
+  try {
+    const record = createSheet(req.params.id, name);
+    res.status(201).json(record);
+  } catch (error) {
+    if (error.message.includes('already exists')) {
+      res.status(409).json({ error: error.message });
+    } else if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(400).json({ error: error.message });
+    }
   }
-
-  const existing = db
-    .prepare('SELECT id FROM sheets WHERE spreadsheet_id = ? AND lower(name) = lower(?)')
-    .get(req.params.id, name.trim());
-  if (existing) {
-    return res.status(409).json({ error: 'A sheet with that name already exists in this spreadsheet.' });
-  }
-
-  const id = randomUUID();
-  const timestamp = now();
-  db.prepare(
-    'INSERT INTO sheets (id, spreadsheet_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, req.params.id, name.trim(), timestamp, timestamp);
-
-  touchSpreadsheet(req.params.id);
-
-  const record = db.prepare('SELECT * FROM sheets WHERE id = ?').get(id);
-  res.status(201).json(record);
 });
 
 app.patch('/sheets/:id', (req, res) => {
@@ -909,13 +1180,13 @@ app.delete('/sheets/:id/columns/:index', (req, res) => {
 
 // Anthropic Chat Handler
 const handleAnthropicChat = async (req, res, context) => {
-  const { trimmedQuery, selectedCells, userMessage, sheetMetas, sheetSummary, sheetReferenceList } = context;
+  const { trimmedQuery, selectedCells, userMessage, sheetMetas, sheetSummary, sheetReferenceList, activeSheet } = context;
 
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
-    'You have access to seven tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), deleteRows (for removing rows), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), and filter_clear (to remove filters).',
+    'You have access to eight tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), deleteRows (for removing rows), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), filter_clear (to remove filters), and createSheet (to create new sheets).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
-    'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
+    'Use `mutateSheetSql` for changing spreadsheet data (UPDATE, INSERT, ALTER TABLE ... ADD COLUMN) or creating new sheets with computed data (CREATE TABLE AS). For CREATE TABLE AS, the sheet parameter can reference any existing sheet (it\'s ignored), and use: CREATE TABLE context.spreadsheet.sheets["NewSheetName"] AS SELECT ... FROM context.spreadsheet.sheets["SourceSheet"]. This creates a new sheet with all computed data in a single SQL operation - perfect for JOINs and combining AI() functions with GROUP BY aggregations. Example: CREATE TABLE context.spreadsheet.sheets["Product Summary"] AS SELECT product, AVG(score), AI(\'Summarize: \' || GROUP_CONCAT(review)) FROM context.spreadsheet.sheets["Reviews"] GROUP BY product.',
     'Use `deleteRows` when the user explicitly asks to delete or remove rows from the spreadsheet. You can delete by specific row numbers (e.g., rowNumbers: [5, 7, 9]) or by condition (e.g., condition: \'"grade" < 10\'). Row numbers stay consistent - if row 7 is deleted, the UI shows rows 5, 6, 8 (not renumbered).',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
@@ -924,6 +1195,10 @@ const handleAnthropicChat = async (req, res, context) => {
     'Use `filter_add` to show only rows that match a SQL boolean condition (other rows are hidden). Provide a WHERE clause expression. Filters persist and can be layered (multiple filters create AND conditions). Examples: filter_add(sheet: context.spreadsheet.sheets["Sales"], condition: \'"revenue" > 1000\'), or filter_add(condition: \'"status" = \\\'active\\\' AND "revenue" > 5000\').',
     'Use `filter_clear` to remove all active filters from a sheet and show all rows again.',
     'Use `filters_get` to check what filters are currently active on a sheet. Returns the list of active filter conditions. Use this to verify filter state before adding or removing filters.',
+    'Use `createSheet` to create new sheets within the current spreadsheet. This is useful when you need to create transformed data, summaries, filtered copies, or derived tables. Provide a descriptive name and optionally specify column names. After creating a sheet, you can populate it with INSERT statements via mutateSheetSql. The new sheet will immediately appear in the UI for the user to see.',
+    'IMPORTANT: The AI(prompt, schema) SQL function is available for LLM-powered analysis within queries. This function calls Gemini Flash 2.0 with the provided prompt and returns the response. The optional schema parameter constrains the output format. Use SQL string concatenation (||), aggregations (GROUP_CONCAT, SUM, AVG), window functions (OVER PARTITION BY), or subqueries to dynamically assemble prompts from spreadsheet data.',
+    'AI() schema modes: (1) Text (default): AI(\'Summarize this\') returns freeform text. (2) Boolean: AI(\'Is this positive?\', \'boolean\') returns "true" or "false" string - perfect for WHERE/HAVING clauses and filtering. (3) Enum: AI(\'Rate sentiment\', \'["positive","negative","neutral"]\') returns one of the enum values. Boolean and enum modes use structured output (JSON schema) for reliability and lower token usage.',
+    'AI() examples: (1) Filtering: SELECT * FROM reviews WHERE AI(\'Is this review positive? Review: \' || "review", \'boolean\') = \'true\'. (2) Aggregation: SELECT AI(\'Summarize: \' || GROUP_CONCAT("review", \', \')) FROM reviews GROUP BY product_id. (3) Categorization: SELECT review, AI(\'Categorize: \' || review, \'["bug","feature","praise","complaint"]\') as category FROM feedback. (4) Window function: SELECT review, AI(\'Rate 1-5: \' || review || \'. Context: \' || GROUP_CONCAT(review) OVER (PARTITION BY product_id), \'["1","2","3","4","5"]\') FROM reviews. The AI function is synchronous and makes real API calls, so use it judiciously.',
     'If a tool call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
     'When calling a tool, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
     'Each sheet table contains a `row_number` column that corresponds to the spreadsheet row number. Always SELECT row_number when you need to highlight cells based on query results. Summarize tool results for the user instead of pasting large tables verbatim.',
@@ -934,6 +1209,10 @@ const handleAnthropicChat = async (req, res, context) => {
     let text = message.content;
 
     if (message.id === userMessage.id) {
+      if (activeSheet) {
+        text = `${text}\n\nCurrently viewing sheet: "${activeSheet.name}" (sheetId: ${activeSheet.id})`;
+      }
+
       const contextEntries =
         selectedCells && typeof selectedCells === 'object'
           ? Object.entries(selectedCells)
@@ -1132,6 +1411,30 @@ const handleAnthropicChat = async (req, res, context) => {
         required: ['sheet'],
       },
     },
+    {
+      name: 'createSheet',
+      description:
+        'Create a new sheet in the current spreadsheet. Use this when you need to create derived tables, transformations, summaries, or any new data structure based on existing data. The new sheet will appear in the UI immediately.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description:
+              'Name for the new sheet. Should be descriptive of its contents (e.g., "High Performers", "Q4 Summary", "Filtered Results").',
+          },
+          columns: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+            description:
+              'Optional array of column names for the new sheet. If not provided, you can add columns later via SQL INSERT or ALTER TABLE statements.',
+          },
+        },
+        required: ['name'],
+      },
+    },
   ];
 
   try {
@@ -1231,50 +1534,94 @@ const handleAnthropicChat = async (req, res, context) => {
         let toolCallRecord = null;
 
         try {
-          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear' || toolName === 'deleteRows';
+          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear' || toolName === 'deleteRows' || toolName === 'filters_get' || toolName === 'createSheet';
           const isSqlTool = toolName === 'executeSheetSql' || toolName === 'mutateSheetSql';
+          const isCreateTableAs = /^\s*CREATE\s+TABLE\s+/i.test(trimmedSql || '');
 
-          if (isSqlTool && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
+          // For CREATE TABLE AS, we don't need a valid sheet reference since we're creating a new sheet
+          if (isSqlTool && !isCreateTableAs && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
             throw new Error('Both sheet reference and sql are required for this tool call.');
           }
 
           const targetSheetId = sheetMeta?.id;
 
           if (toolName === 'mutateSheetSql') {
-            const execution = executeSheetSqlMutation(req.params.id, targetSheetId, trimmedSql);
-            toolResultContent = JSON.stringify({
-              ok: true,
-              sheetId: targetSheetId,
-              sheetName: execution.sheet?.name,
-              operation: execution.operation,
-              changes: execution.changes,
-              lastInsertRowid: execution.lastInsertRowid,
-              addedColumns: execution.addedColumns,
-            });
+            // Check if this is a CREATE TABLE AS statement
+            const isCreateTableAs = /^\s*CREATE\s+TABLE\s+/i.test(trimmedSql);
 
-            toolCallRecord = {
-              name: toolName,
-              kind: 'write',
-              sheetId: targetSheetId,
-              sheetName: execution.sheet?.name,
-              sql: trimmedSql,
-              status: 'ok',
-              operation: execution.operation,
-              changes: execution.changes,
-              lastInsertRowid: execution.lastInsertRowid,
-              addedColumns: execution.addedColumns,
-              reference: sheetReferenceLabel,
-            };
+            let execution;
+            if (isCreateTableAs) {
+              // Handle CREATE TABLE AS specially
+              execution = executeCreateTableAs(req.params.id, trimmedSql);
 
-            if (execution.addedColumns?.length && sheetMeta) {
-              sheetMeta.columns = [
-                ...(sheetMeta.columns ?? []),
-                ...execution.addedColumns.map((column) => ({
-                  header: column.header,
-                  sql_name: column.sqlName,
-                  column_index: column.columnIndex,
-                })),
-              ];
+              // Add the new sheet to sheetMetas so it's available for future tool calls
+              sheetMetas.push({
+                id: execution.sheet.id,
+                name: execution.sheet.name,
+                slug: slugifySheetName(execution.sheet.name),
+                columns: [],
+              });
+
+              toolResultContent = JSON.stringify({
+                ok: true,
+                sheetId: execution.sheet.id,
+                sheetName: execution.sheet.name,
+                tableName: execution.tableName,
+                operation: execution.operation,
+                rowCount: execution.rowCount,
+                columns: execution.columns,
+                message: `Sheet "${execution.sheet.name}" created with ${execution.rowCount} rows and ${execution.columns.length} columns.`,
+              });
+
+              toolCallRecord = {
+                name: toolName,
+                kind: 'create_table_as',
+                sheetId: execution.sheet.id,
+                sheetName: execution.sheet.name,
+                sql: trimmedSql,
+                status: 'ok',
+                operation: execution.operation,
+                rowCount: execution.rowCount,
+                columns: execution.columns,
+                reference: `context.spreadsheet.sheets["${execution.sheet.name}"]`,
+              };
+            } else {
+              // Regular mutation (UPDATE, INSERT, ALTER TABLE)
+              execution = executeSheetSqlMutation(req.params.id, targetSheetId, trimmedSql);
+              toolResultContent = JSON.stringify({
+                ok: true,
+                sheetId: targetSheetId,
+                sheetName: execution.sheet?.name,
+                operation: execution.operation,
+                changes: execution.changes,
+                lastInsertRowid: execution.lastInsertRowid,
+                addedColumns: execution.addedColumns,
+              });
+
+              toolCallRecord = {
+                name: toolName,
+                kind: 'write',
+                sheetId: targetSheetId,
+                sheetName: execution.sheet?.name,
+                sql: trimmedSql,
+                status: 'ok',
+                operation: execution.operation,
+                changes: execution.changes,
+                lastInsertRowid: execution.lastInsertRowid,
+                addedColumns: execution.addedColumns,
+                reference: sheetReferenceLabel,
+              };
+
+              if (execution.addedColumns?.length && sheetMeta) {
+                sheetMeta.columns = [
+                  ...(sheetMeta.columns ?? []),
+                  ...execution.addedColumns.map((column) => ({
+                    header: column.header,
+                    sql_name: column.sqlName,
+                    column_index: column.columnIndex,
+                  })),
+                ];
+              }
             }
           } else if (toolName === 'executeSheetSql') {
             const execution = executeSheetSql(req.params.id, targetSheetId, trimmedSql);
@@ -1465,12 +1812,16 @@ const handleAnthropicChat = async (req, res, context) => {
               totalFilters: currentFilters.length,
             });
 
+            // Build the full SQL query for display
+            const fullFilterSql = `SELECT * FROM "${tableName}" WHERE ${condition.trim()}`;
+
             toolCallRecord = {
               name: toolName,
               kind: 'filter',
               sheetId: sheetMeta.id,
               sheetName: sheetMeta.name,
               condition: condition.trim(),
+              sql: fullFilterSql,
               status: 'ok',
               reference: sheetReferenceLabel,
             };
@@ -1522,6 +1873,40 @@ const handleAnthropicChat = async (req, res, context) => {
               filterCount: currentFilters.length,
               reference: sheetReferenceLabel,
             };
+          } else if (toolName === 'createSheet') {
+            const name = toolInput.name;
+            const columns = toolInput.columns;
+
+            if (!name || typeof name !== 'string' || !name.trim()) {
+              throw new Error('Sheet name is required for createSheet.');
+            }
+
+            const newSheet = createSheet(req.params.id, name, columns);
+
+            // Add the new sheet to sheetMetas so it's available for future tool calls
+            sheetMetas.push({
+              id: newSheet.id,
+              name: newSheet.name,
+              slug: slugifySheetName(newSheet.name),
+              columns: [],
+            });
+
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: newSheet.id,
+              sheetName: newSheet.name,
+              tableName: tableNameForSheet(newSheet.id),
+              message: `Sheet "${newSheet.name}" created successfully. You can now populate it with INSERT statements.`,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'create_sheet',
+              sheetId: newSheet.id,
+              sheetName: newSheet.name,
+              status: 'ok',
+              columns: columns || [],
+            };
           } else {
             throw new Error(`Unsupported tool: ${toolName}`);
           }
@@ -1545,7 +1930,9 @@ const handleAnthropicChat = async (req, res, context) => {
           const isFilter = toolName === 'filter_add';
           const isFilterClear = toolName === 'filter_clear';
           const isDelete = toolName === 'deleteRows';
-          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear || isDelete;
+          const isCreateSheet = toolName === 'createSheet';
+          const isCreateTableAs = /^\s*CREATE\s+TABLE\s+/i.test(trimmedSql || '');
+          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear || isDelete || isCreateSheet || isCreateTableAs;
 
           toolResultContent = JSON.stringify({
             ok: false,
@@ -1560,6 +1947,8 @@ const handleAnthropicChat = async (req, res, context) => {
           else if (isFilterClear) kind = 'filter_clear';
           else if (isFilter) kind = 'filter';
           else if (isDelete) kind = 'delete';
+          else if (isCreateSheet) kind = 'create_sheet';
+          else if (isCreateTableAs) kind = 'create_table_as';
           else if (isMutation) kind = 'write';
 
           toolCallRecord = {
@@ -1648,7 +2037,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     return res.status(404).json({ error: 'Spreadsheet not found.' });
   }
 
-  const { query, selectedCells } = req.body ?? {};
+  const { query, selectedCells, activeSheetId } = req.body ?? {};
   if (!query || typeof query !== 'string' || !query.trim()) {
     return res.status(400).json({ error: 'query is required.' });
   }
@@ -1658,6 +2047,9 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
   const userMessage = addChatMessage(req.params.id, 'user', trimmedQuery, rangeLabel);
 
   const { sheets: sheetMetas, summaryText: sheetSummary } = buildSheetMetadataSummary(req.params.id);
+
+  // Find the active sheet to provide context
+  const activeSheet = activeSheetId ? sheetMetas.find(s => s.id === activeSheetId) : null;
 
   const sheetReferenceList = sheetMetas
     .map(
@@ -1675,6 +2067,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
       sheetMetas,
       sheetSummary,
       sheetReferenceList,
+      activeSheet,
     });
   }
 
@@ -1697,6 +2090,10 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     let text = message.content;
 
     if (message.id === userMessage.id) {
+      if (activeSheet) {
+        text = `${text}\n\nCurrently viewing sheet: "${activeSheet.name}" (sheetId: ${activeSheet.id})`;
+      }
+
       const contextEntries =
         selectedCells && typeof selectedCells === 'object'
           ? Object.entries(selectedCells)

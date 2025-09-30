@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Sparkles, Info, Database, ChevronDown, Hammer, X } from "lucide-react";
+import { Send, Bot, User, Sparkles, Info, Database, ChevronDown, Hammer, X, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -11,7 +11,9 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { toast } from "@/components/ui/sonner";
 import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 interface Message {
   id: string;
@@ -54,6 +56,7 @@ interface ChatPanelProps {
   onAssistantToolCalls?: (toolCalls: ToolCall[] | null | undefined) => void;
   selectedCells?: { [key: string]: string };
   spreadsheetId?: string;
+  activeSheetId?: string;
   highlights?: CellHighlight[];
   onClearHighlights?: () => void;
   filters?: FilterCondition[];
@@ -99,7 +102,7 @@ const welcomeMessage: Message = {
   toolCalls: null,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, highlights = [], onClearHighlights, filters = [], onClearFilters }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, filters = [], onClearFilters }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -203,6 +206,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           const response = await dataClient.sendChatMessage(spreadsheetId, {
             query: trimmed,
             selectedCells: selectedCells || {},
+            activeSheetId: activeSheetId,
           });
 
           const updatedMessages = response.messages ?? [];
@@ -333,7 +337,8 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
   };
 
   return (
-    <div className="flex flex-col h-full bg-card">
+    <TooltipProvider>
+      <div className="flex flex-col h-full bg-card">
       {/* Header */}
       <div className="p-4 border-b border-border bg-gradient-to-r from-primary/5 to-accent/5">
         <div className="flex items-center justify-between gap-3">
@@ -637,18 +642,50 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                               )}
 
                               {toolCall.sql && (
-                                <Collapsible className="mt-3">
-                                  <CollapsibleTrigger className="group flex items-center gap-2 text-xs font-medium text-primary hover:text-primary/90">
-                                    <ChevronDown className="h-4 w-4 transition-transform duration-200 group-data-[state=open]:rotate-180" />
-                                    View SQL
-                                  </CollapsibleTrigger>
-                                  <CollapsibleContent className="mt-2">
-                                    <div
-                                      className="prose prose-xs max-w-none rounded-md bg-muted/40 p-3 font-mono text-xs dark:prose-invert"
-                                      dangerouslySetInnerHTML={{ __html: renderMarkdown(sqlMarkdown) }}
-                                    />
-                                  </CollapsibleContent>
-                                </Collapsible>
+                                <div className="mt-3">
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-2"
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(toolCall.sql || '');
+                                          toast('SQL copied to clipboard');
+                                        }}
+                                      >
+                                        <Copy className="h-3 w-3" />
+                                        Copy SQL
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="bottom" className="p-0 w-[600px] max-h-96 overflow-auto">
+                                      <div style={{ width: '600px' }}>
+                                        <SyntaxHighlighter
+                                          language="sql"
+                                          style={oneDark}
+                                          PreTag="div"
+                                          customStyle={{
+                                            margin: 0,
+                                            fontSize: '0.75rem',
+                                            borderRadius: '0.375rem',
+                                            width: '600px',
+                                            overflowWrap: 'break-word',
+                                            wordWrap: 'break-word',
+                                            wordBreak: 'break-word',
+                                          }}
+                                          codeTagProps={{
+                                            style: {
+                                              whiteSpace: 'pre-wrap',
+                                              wordBreak: 'break-word',
+                                            }
+                                          }}
+                                        >
+                                          {toolCall.sql || ''}
+                                        </SyntaxHighlighter>
+                                      </div>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </div>
                               )}
                             </div>
                           );
@@ -713,5 +750,6 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         )}
       </div>
     </div>
+    </TooltipProvider>
   );
 };

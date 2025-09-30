@@ -2,6 +2,7 @@ import { CellSelection } from "@/pages/Index";
 
 interface CoordinateDisplayProps {
   selection: CellSelection;
+  cellContent?: string;
 }
 
 const getColumnLabel = (colIndex: number): string => {
@@ -54,18 +55,23 @@ const formatSelectionReference = (selection: CellSelection): string => {
   return `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
 };
 
-export const CoordinateDisplay = ({ selection }: CoordinateDisplayProps) => {
+export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayProps) => {
   const displayText = formatSelectionReference(selection);
 
   return (
     <div className="bg-coordinate-background border-b border-border px-4 py-2">
       <div className="flex items-center gap-4">
-        <div className="text-sm text-muted-foreground">
+        <div className="text-sm text-muted-foreground flex-shrink-0">
           Selected:
         </div>
-        <div className="text-sm font-mono font-medium bg-card border border-border rounded px-2 py-1">
+        <div className="text-sm font-mono font-medium bg-card border border-border rounded px-2 py-1 flex-shrink-0">
           {displayText}
         </div>
+        {cellContent && (
+          <div className="text-sm bg-card border border-border rounded px-2 py-1 flex-1 overflow-x-auto whitespace-nowrap">
+            {cellContent}
+          </div>
+        )}
       </div>
     </div>
   );
