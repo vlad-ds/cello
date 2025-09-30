@@ -1475,6 +1475,22 @@ const handleAnthropicChat = async (req, res, context) => {
       },
     },
     {
+      name: 'executeTempSql',
+      description:
+        'Execute arbitrary SQL for intermediate computations using temporary tables. Use this for complex multi-step analysis that requires temporary storage without creating visible sheets. Temp tables are named "temp_*" and do not appear in the UI. Use this when you need staging tables, intermediate calculations, or complex JOINs that require multiple steps.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sql: {
+            type: 'string',
+            description:
+              'Any valid SQL statement. Can be CREATE TABLE temp_*, INSERT INTO temp_*, SELECT from temp_* and sheet tables, DROP TABLE temp_*, etc. Temp table names must start with "temp_". You can reference sheet tables using the context.spreadsheet.sheets["SheetName"] syntax.',
+          },
+        },
+        required: ['sql'],
+      },
+    },
+    {
       name: 'createSheet',
       description:
         'Create a new sheet in the current spreadsheet. Use this when you need to create derived tables, transformations, summaries, or any new data structure based on existing data. The new sheet will appear in the UI immediately.',
@@ -1597,7 +1613,7 @@ const handleAnthropicChat = async (req, res, context) => {
         let toolCallRecord = null;
 
         try {
-          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear' || toolName === 'deleteRows' || toolName === 'filters_get' || toolName === 'createSheet';
+          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear' || toolName === 'deleteRows' || toolName === 'filters_get' || toolName === 'createSheet' || toolName === 'executeTempSql';
           const isSqlTool = toolName === 'executeSheetSql' || toolName === 'mutateSheetSql';
           const isCreateTableAs = /^\s*CREATE\s+TABLE\s+/i.test(trimmedSql || '');
 
@@ -1970,6 +1986,76 @@ const handleAnthropicChat = async (req, res, context) => {
               status: 'ok',
               columns: columns || [],
             };
+          } else if (toolName === 'executeTempSql') {
+            const sql = toolInput.sql;
+
+            if (!sql || typeof sql !== 'string' || !sql.trim()) {
+              throw new Error('SQL statement is required for executeTempSql.');
+            }
+
+            const trimmedSql = sql.trim();
+
+            // Validate that CREATE TABLE statements use temp_ prefix
+            const isCreateTable = /^\s*CREATE\s+TABLE\s+/i.test(trimmedSql);
+            if (isCreateTable) {
+              const tableNameMatch = trimmedSql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["']?(\w+)["']?/i);
+              const tableName = tableNameMatch?.[1];
+              if (tableName && !tableName.toLowerCase().startsWith('temp_')) {
+                throw new Error('Temporary tables must start with "temp_" prefix. Example: CREATE TABLE temp_analysis (...)');
+              }
+            }
+
+            // Replace sheet references with actual table names
+            let rewrittenSql = trimmedSql;
+            for (const sheet of sheetMetas) {
+              const patterns = [
+                `context.spreadsheet.sheets["${sheet.name}"]`,
+                `context.spreadsheet.sheets['${sheet.name}']`,
+                `context.spreadsheet.sheets["${sheet.slug}"]`,
+                `context.spreadsheet.sheets['${sheet.slug}']`,
+              ];
+              for (const pattern of patterns) {
+                rewrittenSql = rewrittenSql.replace(new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `"${tableNameForSheet(sheet.id)}"`);
+              }
+            }
+
+            // Execute the SQL
+            let result;
+            const isSelect = /^\s*SELECT\s+/i.test(rewrittenSql);
+
+            if (isSelect) {
+              const rows = readOnlyDb.prepare(rewrittenSql).all();
+              const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+              result = {
+                ok: true,
+                operation: 'select',
+                rowCount: rows.length,
+                columns,
+                rows: rows.slice(0, 100), // Limit to 100 rows in response
+                truncated: rows.length > 100,
+              };
+            } else {
+              const info = db.prepare(rewrittenSql).run();
+              result = {
+                ok: true,
+                operation: isCreateTable ? 'create_table' : 'mutation',
+                changes: info.changes,
+                lastInsertRowid: info.lastInsertRowid,
+              };
+            }
+
+            toolResultContent = JSON.stringify(result);
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'temp_sql',
+              sql: trimmedSql,
+              rewrittenSql: rewrittenSql !== trimmedSql ? rewrittenSql : undefined,
+              status: 'ok',
+              operation: result.operation,
+              changes: result.changes,
+              rowCount: result.rowCount,
+            };
           } else {
             throw new Error(`Unsupported tool: ${toolName}`);
           }
@@ -1994,8 +2080,9 @@ const handleAnthropicChat = async (req, res, context) => {
           const isFilterClear = toolName === 'filter_clear';
           const isDelete = toolName === 'deleteRows';
           const isCreateSheet = toolName === 'createSheet';
+          const isTempSql = toolName === 'executeTempSql';
           const isCreateTableAs = /^\s*CREATE\s+TABLE\s+/i.test(trimmedSql || '');
-          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear || isDelete || isCreateSheet || isCreateTableAs;
+          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear || isDelete || isCreateSheet || isTempSql || isCreateTableAs;
 
           toolResultContent = JSON.stringify({
             ok: false,
@@ -2011,6 +2098,7 @@ const handleAnthropicChat = async (req, res, context) => {
           else if (isFilter) kind = 'filter';
           else if (isDelete) kind = 'delete';
           else if (isCreateSheet) kind = 'create_sheet';
+          else if (isTempSql) kind = 'temp_sql';
           else if (isCreateTableAs) kind = 'create_table_as';
           else if (isMutation) kind = 'write';
 
@@ -2273,6 +2361,22 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
             required: [],
           },
         },
+        {
+          name: 'executeTempSql',
+          description:
+            'Execute arbitrary SQL for intermediate computations using temporary tables. Use this for complex multi-step analysis that requires temporary storage without creating visible sheets. Temp tables are named "temp_*" and do not appear in the UI. Use this when you need staging tables, intermediate calculations, or complex JOINs that require multiple steps.',
+          parameters: {
+            type: 'object',
+            properties: {
+              sql: {
+                type: 'string',
+                description:
+                  'Any valid SQL statement. Can be CREATE TABLE temp_*, INSERT INTO temp_*, SELECT from temp_* and sheet tables, DROP TABLE temp_*, etc. Temp table names must start with "temp_". You can reference sheet tables using the context.spreadsheet.sheets["SheetName"] syntax.',
+              },
+            },
+            required: ['sql'],
+          },
+        },
       ],
     },
   ];
@@ -2451,7 +2555,7 @@ const buildRequestPayload = (conversationContents) => ({
       let toolCallRecord = null;
 
       try {
-        if (callName !== 'highlights_add' && callName !== 'highlights_clear' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
+        if (callName !== 'highlights_add' && callName !== 'highlights_clear' && callName !== 'executeTempSql' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
           throw new Error('Both sheet reference and sql are required for this tool call.');
         }
 
@@ -2592,6 +2696,76 @@ const buildRequestPayload = (conversationContents) => ({
             status: 'ok',
             reference: sheetReferenceLabel,
           };
+        } else if (callName === 'executeTempSql') {
+          const sql = parsedArgs.sql;
+
+          if (!sql || typeof sql !== 'string' || !sql.trim()) {
+            throw new Error('SQL statement is required for executeTempSql.');
+          }
+
+          const trimmedTempSql = sql.trim();
+
+          // Validate that CREATE TABLE statements use temp_ prefix
+          const isCreateTable = /^\s*CREATE\s+TABLE\s+/i.test(trimmedTempSql);
+          if (isCreateTable) {
+            const tableNameMatch = trimmedTempSql.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["']?(\w+)["']?/i);
+            const tableName = tableNameMatch?.[1];
+            if (tableName && !tableName.toLowerCase().startsWith('temp_')) {
+              throw new Error('Temporary tables must start with "temp_" prefix. Example: CREATE TABLE temp_analysis (...)');
+            }
+          }
+
+          // Replace sheet references with actual table names
+          let rewrittenSql = trimmedTempSql;
+          for (const sheet of sheetMetas) {
+            const patterns = [
+              `context.spreadsheet.sheets["${sheet.name}"]`,
+              `context.spreadsheet.sheets['${sheet.name}']`,
+              `context.spreadsheet.sheets["${sheet.slug}"]`,
+              `context.spreadsheet.sheets['${sheet.slug}']`,
+            ];
+            for (const pattern of patterns) {
+              rewrittenSql = rewrittenSql.replace(new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `"${tableNameForSheet(sheet.id)}"`);
+            }
+          }
+
+          // Execute the SQL
+          let result;
+          const isSelect = /^\s*SELECT\s+/i.test(rewrittenSql);
+
+          if (isSelect) {
+            const rows = readOnlyDb.prepare(rewrittenSql).all();
+            const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+            result = {
+              ok: true,
+              operation: 'select',
+              rowCount: rows.length,
+              columns,
+              rows: rows.slice(0, 100), // Limit to 100 rows in response
+              truncated: rows.length > 100,
+            };
+          } else {
+            const info = db.prepare(rewrittenSql).run();
+            result = {
+              ok: true,
+              operation: isCreateTable ? 'create_table' : 'mutation',
+              changes: info.changes,
+              lastInsertRowid: info.lastInsertRowid,
+            };
+          }
+
+          toolResultPayload = result;
+
+          toolCallRecord = {
+            name: callName,
+            kind: 'temp_sql',
+            sql: trimmedTempSql,
+            rewrittenSql: rewrittenSql !== trimmedTempSql ? rewrittenSql : undefined,
+            status: 'ok',
+            operation: result.operation,
+            changes: result.changes,
+            rowCount: result.rowCount,
+          };
         } else {
           throw new Error(`Unsupported function call: ${callName}`);
         }
@@ -2611,24 +2785,25 @@ const buildRequestPayload = (conversationContents) => ({
         const isMutation = callName === 'mutateSheetSql';
         const isHighlight = callName === 'highlights_add';
         const isHighlightClear = callName === 'highlights_clear';
+        const isTempSql = callName === 'executeTempSql';
         toolResultPayload = {
           ok: false,
           sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
           sheetReference: sheetReferenceLabel,
-          error: toolError instanceof Error ? toolError.message : ((isHighlight || isHighlightClear) ? 'Highlight operation failed.' : 'SQL execution failed.'),
+          error: toolError instanceof Error ? toolError.message : ((isHighlight || isHighlightClear) ? 'Highlight operation failed.' : (isTempSql ? 'Temporary SQL execution failed.' : 'SQL execution failed.')),
         };
 
         toolCallRecord = {
           name: callName,
-          kind: isHighlightClear ? 'highlight_clear' : (isHighlight ? 'highlight' : (isMutation ? 'write' : 'read')),
+          kind: isHighlightClear ? 'highlight_clear' : (isHighlight ? 'highlight' : (isTempSql ? 'temp_sql' : (isMutation ? 'write' : 'read'))),
           sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
-          sql: (isHighlight || isHighlightClear) ? undefined : trimmedSql,
+          sql: (isHighlight || isHighlightClear) ? undefined : (isTempSql ? parsedArgs.sql : trimmedSql),
           range: isHighlight ? parsedArgs.range : undefined,
           condition: isHighlight ? parsedArgs.condition : undefined,
           status: 'error',
-          operation: (isHighlight || isHighlightClear) ? undefined : (isMutation ? undefined : 'select'),
+          operation: (isHighlight || isHighlightClear || isTempSql) ? undefined : (isMutation ? undefined : 'select'),
           error: toolError instanceof Error ? toolError.message : String(toolError),
           reference: sheetReferenceLabel,
         };
