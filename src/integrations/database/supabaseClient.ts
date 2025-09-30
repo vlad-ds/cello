@@ -160,7 +160,7 @@ export const supabaseDataClient: DataClient = {
 
   async sendChatMessage(
     _spreadsheetId: string,
-    _payload: { query: string; selectedCells?: Record<string, string> }
+    _payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
   ): Promise<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }> {
     throw new Error('Chat persistence is only supported with the local SQLite backend for now.');
   },

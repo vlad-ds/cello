@@ -6,7 +6,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { supabase } from "@/integrations/supabase/client";
 import { backendConfig } from "@/config/backend";
-import { dataClient, isSupabaseBackend, type CellHighlight, type FilterCondition } from "@/integrations/database";
+import {
+  dataClient,
+  isSupabaseBackend,
+  type CellHighlight,
+  type FilterCondition,
+  type ChatMessage,
+  type ToolCallRecord,
+} from "@/integrations/database";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { toast } from "@/components/ui/sonner";
@@ -22,34 +29,10 @@ interface Message {
   timestamp: Date;
   contextRange?: string | null;
   toolCalls?: ToolCall[] | null;
+  isStreaming?: boolean;
 }
 
-interface ToolCall {
-  name?: string;
-  sheetId?: string;
-  sheetName?: string;
-  reference?: string | null;
-  sql?: string;
-  status?: "ok" | "error";
-  rowCount?: number;
-  truncated?: boolean;
-  columns?: string[];
-  error?: string;
-  kind?: "read" | "write" | "highlight" | "highlight_clear";
-  operation?: "select" | "update" | "insert" | "alter";
-  changes?: number;
-  lastInsertRowid?: number | string;
-  addedColumns?: {
-    header: string;
-    sqlName: string;
-    columnIndex: number;
-  }[];
-  range?: string;
-  condition?: string;
-  rowNumbers?: number[];
-  color?: string;
-  message?: string | null;
-}
+type ToolCall = ToolCallRecord;
 
 interface ChatPanelProps {
   onCommand?: (command: string) => void;
@@ -93,6 +76,17 @@ const renderMarkdown = (content: string) => {
   return DOMPurify.sanitize(html);
 };
 
+const mapChatHistoryToMessages = (history: ChatMessage[]): Message[] =>
+  history.map((message) => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    timestamp: new Date(message.created_at),
+    contextRange: message.context_range ?? null,
+    toolCalls: message.tool_calls ?? null,
+    isStreaming: false,
+  }));
+
 const welcomeMessage: Message = {
   id: "welcome",
   role: "assistant",
@@ -101,6 +95,7 @@ const welcomeMessage: Message = {
   timestamp: new Date(),
   contextRange: null,
   toolCalls: null,
+  isStreaming: false,
 };
 
 export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, onScrollToHighlight, filters = [], onClearFilters }: ChatPanelProps) => {
@@ -131,16 +126,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         if (history.length === 0) {
           setMessages([welcomeMessage]);
         } else {
-          setMessages(
-            history.map((message) => ({
-              id: message.id,
-              role: message.role,
-              content: message.content,
-              timestamp: new Date(message.created_at),
-              contextRange: message.context_range ?? null,
-              toolCalls: message.tool_calls ?? null,
-            }))
-          );
+          setMessages(mapChatHistoryToMessages(history));
         }
       })
       .catch((error) => {
@@ -178,52 +164,128 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
 
     const trimmed = input.trim();
     const rangeValue = getRangeValue(selectedCells);
+    const timestamp = new Date();
     const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
+      id: `${Date.now()}`,
+      role: 'user',
       content: trimmed,
-      timestamp: new Date(),
+      timestamp,
       contextRange: rangeValue,
       toolCalls: null,
+      isStreaming: false,
     };
 
-    setMessages(prev => [...prev, userMessage]);
-    setInput("");
+    setMessages((prev) => [...prev, userMessage]);
+    setInput('');
     setIsTyping(true);
 
-    if (!isSupabaseBackend) {
-      if (!spreadsheetId) {
-        const warningMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: 'Open a spreadsheet to start a saved conversation.',
-          timestamp: new Date(),
-          contextRange: null,
-          toolCalls: null,
-        };
-        setMessages(prev => [...prev, warningMessage]);
-      } else {
-        try {
+    const streamChat = (!isSupabaseBackend && typeof dataClient.sendChatMessageStream === 'function')
+      ? dataClient.sendChatMessageStream.bind(dataClient)
+      : undefined;
+
+    try {
+      if (!isSupabaseBackend && streamChat) {
+        if (!spreadsheetId) {
+          const warningMessage: Message = {
+            id: `${Date.now() + 1}`,
+            role: 'assistant',
+            content: 'Open a spreadsheet to start a saved conversation.',
+            timestamp: new Date(),
+            contextRange: null,
+            toolCalls: null,
+            isStreaming: false,
+          };
+          setMessages((prev) => [...prev, warningMessage]);
+        } else {
+          const assistantId = `assistant-${Date.now()}`;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: assistantId,
+              role: 'assistant',
+              content: '',
+              timestamp: new Date(),
+              contextRange: rangeValue,
+              toolCalls: [],
+              isStreaming: true,
+            },
+          ]);
+
+          let aggregatedText = '';
+          let currentToolCalls: ToolCall[] = [];
+
+          for await (const event of streamChat(spreadsheetId, {
+            query: trimmed,
+            selectedCells: selectedCells || {},
+            activeSheetId,
+          })) {
+            if (event.type === 'delta') {
+              aggregatedText += event.text;
+              const text = aggregatedText;
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantId
+                    ? { ...message, content: text }
+                    : message
+                )
+              );
+            } else if (event.type === 'tool_call') {
+              currentToolCalls = [...currentToolCalls, event.toolCall];
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantId
+                    ? { ...message, toolCalls: currentToolCalls }
+                    : message
+                )
+              );
+              onAssistantToolCalls?.(currentToolCalls);
+            } else if (event.type === 'error') {
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantId
+                    ? {
+                        ...message,
+                        content: event.error,
+                        toolCalls: null,
+                        isStreaming: false,
+                      }
+                    : message
+                )
+              );
+              onAssistantToolCalls?.(null);
+              break;
+            } else if (event.type === 'done') {
+              const finalMessages = mapChatHistoryToMessages(event.messages ?? []);
+              setMessages(finalMessages.length ? finalMessages : [welcomeMessage]);
+              onAssistantToolCalls?.(event.assistantMessage.tool_calls ?? null);
+              break;
+            }
+          }
+        }
+      } else if (!isSupabaseBackend) {
+        if (!spreadsheetId) {
+          const warningMessage: Message = {
+            id: `${Date.now() + 1}`,
+            role: 'assistant',
+            content: 'Open a spreadsheet to start a saved conversation.',
+            timestamp: new Date(),
+            contextRange: null,
+            toolCalls: null,
+            isStreaming: false,
+          };
+          setMessages((prev) => [...prev, warningMessage]);
+        } else {
           const response = await dataClient.sendChatMessage(spreadsheetId, {
             query: trimmed,
             selectedCells: selectedCells || {},
-            activeSheetId: activeSheetId,
+            activeSheetId,
           });
 
           const updatedMessages = response.messages ?? [];
           if (updatedMessages.length === 0) {
             setMessages([welcomeMessage]);
           } else {
-            setMessages(
-              updatedMessages.map((message) => ({
-                id: message.id,
-                role: message.role,
-                content: message.content,
-                timestamp: new Date(message.created_at),
-                contextRange: message.context_range ?? null,
-                toolCalls: message.tool_calls ?? null,
-              }))
-            );
+            setMessages(mapChatHistoryToMessages(updatedMessages));
           }
 
           const lastAssistant = [...updatedMessages]
@@ -232,31 +294,13 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           if (lastAssistant) {
             onAssistantToolCalls?.(lastAssistant.tool_calls ?? null);
           }
-        } catch (error) {
-          console.error('Error saving Gemini conversation:', error);
-          const errorMessage: Message = {
-            id: (Date.now() + 1).toString(),
-            role: 'assistant',
-            content:
-              error instanceof Error
-                ? error.message
-                : 'Sorry, I encountered an error processing your request.',
-            timestamp: new Date(),
-            contextRange: null,
-            toolCalls: null,
-          };
-          setMessages(prev => [...prev, errorMessage]);
-          onAssistantToolCalls?.(null);
         }
-      }
-    } else {
-      // Call Gemini AI through Supabase edge function
-      try {
+      } else {
         const { data, error } = await supabase.functions.invoke('gemini-chat', {
-          body: { 
+          body: {
             query: trimmed,
-            selectedCells: selectedCells || {}
-          }
+            selectedCells: selectedCells || {},
+          },
         });
 
         if (error) {
@@ -264,34 +308,38 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         }
 
         const assistantMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
+          id: `${Date.now() + 1}`,
+          role: 'assistant',
           content: data.response || "I'm sorry, I couldn't process your request.",
           timestamp: new Date(),
           contextRange: rangeValue,
           toolCalls: null,
+          isStreaming: false,
         };
 
-        setMessages(prev => [...prev, assistantMessage]);
-        onAssistantToolCalls?.(null);
-      } catch (error) {
-        console.error('Error calling Gemini AI:', error);
-        const errorMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: "Sorry, I encountered an error processing your request. Please try again.",
-          timestamp: new Date(),
-          contextRange: null,
-          toolCalls: null,
-        };
-        setMessages(prev => [...prev, errorMessage]);
+        setMessages((prev) => [...prev, assistantMessage]);
         onAssistantToolCalls?.(null);
       }
+    } catch (error) {
+      console.error('Error processing conversation:', error);
+      const errorMessage: Message = {
+        id: `${Date.now() + 1}`,
+        role: 'assistant',
+        content:
+          error instanceof Error
+            ? error.message
+            : 'Sorry, I encountered an error processing your request.',
+        timestamp: new Date(),
+        contextRange: null,
+        toolCalls: null,
+        isStreaming: false,
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      onAssistantToolCalls?.(null);
+    } finally {
+      setIsTyping(false);
     }
-    
-    setIsTyping(false);
 
-    // Trigger command callback if provided
     onCommand?.(trimmed);
   };
 
@@ -479,6 +527,12 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                       <p className="text-xs italic text-muted-foreground mt-2 flex items-center gap-1">
                         <Info className="w-3 h-3" />
                         {formatRangeDisplay(message.contextRange)}
+                      </p>
+                    )}
+                    {message.role === 'assistant' && message.isStreaming && (
+                      <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 animate-spin" />
+                        Streaming response...
                       </p>
                     )}
                     {message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0 && (

@@ -1,5 +1,5 @@
 import { backendConfig } from '@/config/backend';
-import type { ChatMessage, DataClient, SheetRecord, SheetTableData, SpreadsheetRecord } from './types';
+import type { ChatMessage, ChatStreamEvent, DataClient, SheetRecord, SheetTableData, SpreadsheetRecord } from './types';
 
 const BASE_URL = backendConfig.sqliteApiBaseUrl.replace(/\/$/, '');
 
@@ -160,6 +160,101 @@ export const sqliteDataClient: DataClient = {
       assistantMessage: normalizeChatMessage(data.assistantMessage),
       messages: (data.messages ?? []).map(normalizeChatMessage),
     };
+  },
+
+  async *sendChatMessageStream(
+    spreadsheetId: string,
+    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
+  ): AsyncGenerator<ChatStreamEvent> {
+    const response = await fetch(`${BASE_URL}/spreadsheets/${spreadsheetId}/chat?stream=true`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok || !response.body) {
+      const message = await response.text().catch(() => 'Streaming request failed');
+      throw new Error(message || 'Streaming request failed');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const parseEvent = (chunk: string) => {
+      const lines = chunk.split('\n');
+      let eventType = 'message';
+      const dataLines: string[] = [];
+
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim() || 'message';
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5));
+        }
+      }
+
+      const dataText = dataLines.join('\n').trim();
+      if (!dataText) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(dataText);
+        return { eventType, data: parsed } as { eventType: string; data: any };
+      } catch (error) {
+        console.warn('Failed to parse SSE chunk', { chunk, error });
+        return null;
+      }
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        let separatorIndex: number;
+        while ((separatorIndex = buffer.indexOf('\n\n')) !== -1) {
+          const rawEvent = buffer.slice(0, separatorIndex);
+          buffer = buffer.slice(separatorIndex + 2);
+
+          const parsed = parseEvent(rawEvent);
+          if (!parsed) continue;
+
+          const { eventType, data } = parsed;
+          if (eventType === 'delta') {
+            if (typeof data?.text === 'string') {
+              yield { type: 'delta', text: data.text } as const;
+            }
+          } else if (eventType === 'tool_call') {
+            yield { type: 'tool_call', toolCall: data } as const;
+          } else if (eventType === 'done') {
+            if (data?.assistantMessage && data?.messages) {
+              yield {
+                type: 'done',
+                assistantMessage: normalizeChatMessage(data.assistantMessage),
+                messages: (data.messages ?? []).map(normalizeChatMessage),
+              } as const;
+            }
+            return;
+          } else if (eventType === 'error') {
+            if (data?.error) {
+              yield { type: 'error', error: String(data.error) } as const;
+            }
+            return;
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   },
 
   async clearChat(spreadsheetId: string): Promise<void> {

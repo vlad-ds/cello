@@ -31,6 +31,57 @@ const logToFile = (category, data) => {
   }
 };
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const createSseStreamer = (res) => {
+  let started = false;
+  let streamedTextLength = 0;
+
+  const start = () => {
+    if (started) return;
+    started = true;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+  };
+
+  const sendEvent = (event, payload) => {
+    start();
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    res.flush?.();
+  };
+
+  const streamDelta = async (fullText) => {
+    if (!fullText) return;
+    const delta = fullText.slice(streamedTextLength);
+    if (!delta) return;
+    streamedTextLength = fullText.length;
+    const tokens = delta.match(/\S+\s*|\s+/g) ?? [delta];
+    for (const token of tokens) {
+      sendEvent('delta', { text: token });
+      await delay(6);
+    }
+  };
+
+  return {
+    streamText: streamDelta,
+    sendToolCall: (toolCall) => {
+      if (!toolCall) return;
+      sendEvent('tool_call', toolCall);
+    },
+    sendError: (error) => {
+      sendEvent('error', { error: String(error) });
+      res.end();
+    },
+    sendDone: (payload) => {
+      sendEvent('done', payload);
+      res.end();
+    },
+  };
+};
+
 const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
 
@@ -1240,7 +1291,7 @@ app.delete('/sheets/:id/columns/:index', (req, res) => {
 });
 
 // Anthropic Chat Handler
-const handleAnthropicChat = async (req, res, context) => {
+const handleAnthropicChat = async (req, res, context, streamer = null) => {
   const { trimmedQuery, selectedCells, userMessage, sheetMetas, sheetSummary, sheetReferenceList, activeSheet } = context;
 
   const systemInstructionText = [
@@ -1250,6 +1301,7 @@ const handleAnthropicChat = async (req, res, context) => {
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM reviews.',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Use `mutateSheetSql` for changing spreadsheet data (UPDATE, INSERT, ALTER TABLE ... ADD COLUMN) or creating new sheets with computed data (CREATE TABLE AS). For CREATE TABLE AS, the sheet parameter can reference any existing sheet (it\'s ignored), and use: CREATE TABLE context.spreadsheet.sheets["NewSheetName"] AS SELECT ... FROM context.spreadsheet.sheets["SourceSheet"]. This creates a new sheet with all computed data in a single SQL operation - perfect for JOINs and combining AI() functions with GROUP BY aggregations. Example: CREATE TABLE context.spreadsheet.sheets["Product Summary"] AS SELECT product, AVG(score), AI(\'Summarize: \' || GROUP_CONCAT(review)) FROM context.spreadsheet.sheets["Reviews"] GROUP BY product.',
+    '**VERIFICATION STRATEGY**: After completing data operations (CREATE TABLE, UPDATE, INSERT, etc.), ALWAYS verify that you accomplished what you intended. Do your best to perform a full verification - for example, if a column shouldn\'t have null values or negative values, check for those. Also look at a few sample rows to understand what was actually created. If results are incorrect, investigate and fix the issue. Never declare success without verification.',
     'Use `deleteRows` when the user explicitly asks to delete or remove rows from the spreadsheet. You can delete by specific row numbers (e.g., rowNumbers: [5, 7, 9]) or by condition (e.g., condition: \'"grade" < 10\'). Row numbers stay consistent - if row 7 is deleted, the UI shows rows 5, 6, 8 (not renumbered).',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
@@ -1555,6 +1607,10 @@ const handleAnthropicChat = async (req, res, context) => {
         const errorBody = await response.json().catch(() => null);
         const message = errorBody?.error?.message || 'Anthropic API request failed.';
         logToFile('anthropic-error', { iteration, error: message, errorBody });
+        if (streamer) {
+          streamer.sendError(message);
+          return;
+        }
         return res.status(response.status).json({ error: message });
       }
 
@@ -1574,6 +1630,9 @@ const handleAnthropicChat = async (req, res, context) => {
 
       if (textBlocks.length > 0) {
         assistantText = textBlocks.map((block) => block.text).join('\n');
+        if (streamer) {
+          await streamer.streamText(assistantText);
+        }
       }
 
       // If no tool use, we're done
@@ -2126,6 +2185,7 @@ const handleAnthropicChat = async (req, res, context) => {
 
         if (toolCallRecord) {
           toolCalls.push(toolCallRecord);
+          streamer?.sendToolCall(toolCallRecord);
         }
       }
 
@@ -2159,6 +2219,13 @@ const handleAnthropicChat = async (req, res, context) => {
     });
 
     const allMessages = listChatMessages(req.params.id);
+
+    if (streamer) {
+      await streamer.streamText(assistantMessage.content || '');
+      streamer.sendDone({ assistantMessage, messages: allMessages });
+      return;
+    }
+
     res.json({
       response: assistantMessage.content,
       assistantMessage,
@@ -2170,7 +2237,11 @@ const handleAnthropicChat = async (req, res, context) => {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
     });
-    res.status(500).json({ error: 'Failed to generate response.' });
+    if (streamer) {
+      streamer.sendError('Failed to generate response.');
+    } else {
+      res.status(500).json({ error: 'Failed to generate response.' });
+    }
   }
 };
 
@@ -2193,6 +2264,11 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     return res.status(400).json({ error: 'query is required.' });
   }
 
+  const isStreamRequest = String(req.query.stream ?? '').toLowerCase() === 'true' ||
+    (req.headers.accept || '').includes('text/event-stream');
+  const allowStreaming = ['gemini', 'anthropic'].includes((AI_PROVIDER || '').toLowerCase());
+  const streamer = allowStreaming && isStreamRequest ? createSseStreamer(res) : null;
+
   const trimmedQuery = query.trim();
   const rangeLabel = computeRangeLabel(selectedCells || {});
   const userMessage = addChatMessage(req.params.id, 'user', trimmedQuery, rangeLabel);
@@ -2211,7 +2287,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
 
   // Route to appropriate AI provider
   if (AI_PROVIDER === 'anthropic') {
-    return handleAnthropicChat(req, res, {
+    return await handleAnthropicChat(req, res, {
       trimmedQuery,
       selectedCells,
       userMessage,
@@ -2219,7 +2295,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
       sheetSummary,
       sheetReferenceList,
       activeSheet,
-    });
+    }, streamer);
   }
 
   const systemInstructionText = [
@@ -2229,6 +2305,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. The AI() function calls Gemini Flash 2.0. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM context.spreadsheet.sheets["Reviews"].',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Column names: The available columns in each sheet are listed in the metadata. Use these exact column names (quoted) in your SQL queries. For example, if you see columns: "scene_number", "page", "text_content", use those names directly in queries like: SELECT "text_content" FROM context.spreadsheet.sheets["Sheet1"] WHERE "scene_number" = 5.',
+    '**VERIFICATION STRATEGY**: After completing data operations (CREATE TABLE, UPDATE, INSERT, etc.), ALWAYS verify that you accomplished what you intended. Do your best to perform a full verification - for example, if a column shouldn\'t have null values or negative values, check for those. Also look at a few sample rows to understand what was actually created. If results are incorrect, investigate and fix the issue. Never declare success without verification.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
@@ -2811,6 +2888,7 @@ const buildRequestPayload = (conversationContents) => ({
 
       if (toolCallRecord) {
         toolCalls.push(toolCallRecord);
+        streamer?.sendToolCall(toolCallRecord);
       }
 
       if (candidateContent) {
@@ -2885,6 +2963,12 @@ const buildRequestPayload = (conversationContents) => ({
     });
 
     const messages = listChatMessages(req.params.id);
+    if (streamer) {
+      await streamer.streamText(assistantText);
+      streamer.sendDone({ assistantMessage, messages });
+      return;
+    }
+
     res.json({
       response: assistantMessage.content,
       assistantMessage,
@@ -2896,7 +2980,11 @@ const buildRequestPayload = (conversationContents) => ({
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined
     });
-    res.status(500).json({ error: 'Failed to generate response.' });
+    if (streamer) {
+      streamer.sendError('Failed to generate response.');
+    } else {
+      res.status(500).json({ error: 'Failed to generate response.' });
+    }
   }
 });
 

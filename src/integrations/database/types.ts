@@ -67,6 +67,12 @@ export interface ChatMessage {
   tool_calls?: ToolCallRecord[] | null;
 }
 
+export type ChatStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'tool_call'; toolCall: ToolCallRecord }
+  | { type: 'done'; assistantMessage: ChatMessage; messages: ChatMessage[] }
+  | { type: 'error'; error: string };
+
 export interface CellHighlight {
   sheetId: string;
   range?: string;
@@ -93,8 +99,12 @@ export interface DataClient {
   getChatMessages(spreadsheetId: string): Promise<ChatMessage[]>;
   sendChatMessage(
     spreadsheetId: string,
-    payload: { query: string; selectedCells?: Record<string, string> }
+    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
   ): Promise<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }>;
+  sendChatMessageStream?: (
+    spreadsheetId: string,
+    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
+  ) => AsyncGenerator<ChatStreamEvent>;
   clearChat(spreadsheetId: string): Promise<void>;
   deleteColumn(sheetId: string, columnIndex: number): Promise<void>;
   clearFilters(sheetId: string): Promise<void>;
