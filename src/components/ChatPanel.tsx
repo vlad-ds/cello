@@ -59,6 +59,7 @@ interface ChatPanelProps {
   activeSheetId?: string;
   highlights?: CellHighlight[];
   onClearHighlights?: () => void;
+  onScrollToHighlight?: (highlight: CellHighlight) => void;
   filters?: FilterCondition[];
   onClearFilters?: () => void;
 }
@@ -102,7 +103,7 @@ const welcomeMessage: Message = {
   toolCalls: null,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, filters = [], onClearFilters }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, onScrollToHighlight, filters = [], onClearFilters }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -373,7 +374,12 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             </div>
             <div className="space-y-1">
               {highlights.map((highlight, idx) => (
-                <div key={idx} className="flex items-center gap-2">
+                <button
+                  key={idx}
+                  onClick={() => onScrollToHighlight?.(highlight)}
+                  className="flex items-center gap-2 w-full text-left hover:bg-muted/70 rounded px-2 py-1 -mx-2 transition-colors cursor-pointer"
+                  title="Click to scroll to highlight"
+                >
                   <div className={`w-3 h-3 rounded-sm flex-shrink-0 ${
                     highlight.color === 'yellow' ? 'bg-yellow-400' :
                     highlight.color === 'red' ? 'bg-red-400' :
@@ -388,7 +394,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                     {highlight.rowNumbers && ` (${highlight.rowNumbers.length} row${highlight.rowNumbers.length !== 1 ? 's' : ''})`}
                     {highlight.message && ` - ${highlight.message}`}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           </div>

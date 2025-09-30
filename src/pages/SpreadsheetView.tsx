@@ -1171,6 +1171,7 @@ const SpreadsheetView = () => {
               onAssistantToolCalls={handleAssistantToolCalls}
               highlights={activeHighlights}
               onClearHighlights={clearHighlights}
+              onScrollToHighlight={scrollToHighlight}
               filters={activeFilters.find(item => item.sheetId === activeSheet?.id)?.filters || []}
               onClearFilters={() => activeSheet && clearFilters(activeSheet.id)}
             />
