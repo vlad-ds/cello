@@ -88,6 +88,54 @@ db.pragma('foreign_keys = ON');
 const readOnlyDb = new Database(dbPath, { readonly: true, fileMustExist: true });
 readOnlyDb.pragma('foreign_keys = ON');
 
+// AI() runtime safeguards
+const parseEnvInt = (value, fallback) => {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const AI_CONFIG = {
+  timeoutMs: Math.max(1000, parseEnvInt(process.env.AI_FUNCTION_TIMEOUT_MS, 90000)),
+  maxRetries: Math.max(0, parseEnvInt(process.env.AI_FUNCTION_MAX_RETRIES, 1)),
+  retryDelayMs: Math.max(0, parseEnvInt(process.env.AI_FUNCTION_RETRY_DELAY_MS, 1000)),
+  batchSize: Math.max(0, parseEnvInt(process.env.AI_FUNCTION_BATCH_SIZE, 5)),
+  batchIntervalMs: Math.max(1, parseEnvInt(process.env.AI_FUNCTION_BATCH_INTERVAL_MS, 1000)),
+};
+
+const aiSleepBuffer = new SharedArrayBuffer(4);
+const aiSleepArray = new Int32Array(aiSleepBuffer);
+const sleepSync = (ms) => {
+  if (ms > 0) {
+    Atomics.wait(aiSleepArray, 0, 0, ms);
+  }
+};
+
+let aiBatchCount = 0;
+let aiBatchWindowStart = Date.now();
+
+const enforceAiBatchLimit = () => {
+  if (AI_CONFIG.batchSize <= 0) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - aiBatchWindowStart >= AI_CONFIG.batchIntervalMs) {
+    aiBatchCount = 0;
+    aiBatchWindowStart = now;
+  }
+
+  if (aiBatchCount >= AI_CONFIG.batchSize) {
+    const waitMs = Math.max(0, AI_CONFIG.batchIntervalMs - (now - aiBatchWindowStart));
+    if (waitMs > 0) {
+      sleepSync(waitMs);
+    }
+    aiBatchCount = 0;
+    aiBatchWindowStart = Date.now();
+  }
+
+  aiBatchCount += 1;
+};
+
 // Register AI() SQL function
 const callAiSync = (prompt, schemaType = null) => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
@@ -95,58 +143,60 @@ const callAiSync = (prompt, schemaType = null) => {
     throw new Error('GEMINI_API_KEY not configured');
   }
 
-  const timestamp = new Date().toISOString();
-  logToFile('ai-function-request', {
-    timestamp,
-    prompt: prompt?.substring(0, 500) + (prompt?.length > 500 ? '...' : ''),
-    promptLength: prompt?.length || 0,
-    schemaType,
-  });
+  enforceAiBatchLimit();
 
-  // Build generationConfig with optional responseSchema
-  const generationConfig = {
-    temperature: 0.3,
-    topK: 32,
-    topP: 0.9,
-    maxOutputTokens: schemaType === 'boolean' ? 10 : 1024,
-  };
+  const baseTimestamp = new Date().toISOString();
+  const promptPreview = prompt?.substring(0, 500) + (prompt?.length > 500 ? '...' : '');
 
-  // Add responseSchema if schemaType is provided
-  if (schemaType === 'boolean') {
-    generationConfig.responseMimeType = 'application/json';
-    generationConfig.responseSchema = {
-      type: 'object',
-      properties: {
-        answer: {
-          type: 'boolean',
-          description: 'The boolean answer to the question'
-        }
-      },
-      required: ['answer']
+  const buildGenerationConfig = () => {
+    const config = {
+      temperature: 0.3,
+      topK: 32,
+      topP: 0.9,
+      maxOutputTokens: schemaType === 'boolean' ? 10 : 1024,
     };
-  } else if (schemaType && schemaType.startsWith('[') && schemaType.endsWith(']')) {
-    // Parse enum array from schema like "['yes','no','maybe']"
-    try {
-      const enumValues = JSON.parse(schemaType.replace(/'/g, '"'));
-      generationConfig.responseMimeType = 'application/json';
-      generationConfig.responseSchema = {
+
+    if (schemaType === 'boolean') {
+      config.responseMimeType = 'application/json';
+      config.responseSchema = {
         type: 'object',
         properties: {
           answer: {
-            type: 'string',
-            enum: enumValues,
-            description: 'The answer selected from the allowed values'
-          }
+            type: 'boolean',
+            description: 'The boolean answer to the question',
+          },
         },
-        required: ['answer']
+        required: ['answer'],
       };
-      generationConfig.maxOutputTokens = 50;
-    } catch (e) {
-      // Invalid enum format, fall back to text
+    } else if (schemaType && schemaType.startsWith('[') && schemaType.endsWith(']')) {
+      try {
+        const enumValues = JSON.parse(schemaType.replace(/'/g, '"'));
+        config.responseMimeType = 'application/json';
+        config.responseSchema = {
+          type: 'object',
+          properties: {
+            answer: {
+              type: 'string',
+              enum: enumValues,
+              description: 'The answer selected from the allowed values',
+            },
+          },
+          required: ['answer'],
+        };
+        config.maxOutputTokens = 50;
+      } catch (error) {
+        // Invalid enum format, fall back to text mode
+      }
     }
-  }
 
+    return config;
+  };
+
+  const generationConfig = buildGenerationConfig();
   const payload = JSON.stringify({
+    systemInstruction: {
+      parts: [{ text: 'You are a data processing assistant. Respond directly and concisely. Never use markdown formatting. Start immediately with your answer without preamble like "OK" or "Here\'s the response". Just provide the requested information.' }],
+    },
     contents: [{
       role: 'user',
       parts: [{ text: String(prompt) }],
@@ -155,50 +205,118 @@ const callAiSync = (prompt, schemaType = null) => {
   });
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const curlPayload = payload.replace(/'/g, "'\\''");
+  const curlTimeoutSeconds = Math.max(1, Math.ceil(AI_CONFIG.timeoutMs / 1000));
+  const curlCommand = `curl -s -X POST "${url}" -H "Content-Type: application/json" --max-time ${curlTimeoutSeconds} -d '${curlPayload}'`;
 
-  try {
-    const curlCommand = `curl -s -X POST "${url}" -H "Content-Type: application/json" -d '${payload.replace(/'/g, "'\\''")}'`;
-    const response = execSync(curlCommand, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
-    const data = JSON.parse(response);
+  const execOptions = {
+    encoding: 'utf-8',
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: AI_CONFIG.timeoutMs + 500,
+  };
 
-    const text = data?.candidates?.[0]?.content?.parts
-      ?.map(part => part.text)
-      ?.filter(Boolean)
-      ?.join('\n')
-      ?.trim() || '';
+  let attempt = 0;
+  let lastError;
 
-    // If we used a schema, parse the JSON response and extract the answer
-    let finalResult = text;
-    if (schemaType && text) {
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed.answer !== undefined) {
-          finalResult = String(parsed.answer);
+  while (attempt <= AI_CONFIG.maxRetries) {
+    attempt += 1;
+
+    logToFile('ai-function-request', {
+      timestamp: baseTimestamp,
+      attempt,
+      prompt: promptPreview,
+      promptLength: prompt?.length || 0,
+      schemaType,
+    });
+
+    const start = Date.now();
+
+    let finishReason = null;
+    let safetyInfo = null;
+
+    try {
+      const response = execSync(curlCommand, execOptions);
+      const durationMs = Date.now() - start;
+      const data = JSON.parse(response);
+
+      const candidate = data?.candidates?.[0];
+      finishReason = candidate?.finishReason ?? candidate?.finish_reason ?? null;
+      safetyInfo = candidate?.safetyRatings ?? candidate?.safety_ratings ?? null;
+
+      const text = candidate?.content?.parts
+        ?.map((part) => part?.text ?? '')
+        ?.filter(Boolean)
+        ?.join('\n')
+        ?.trim() ?? '';
+
+      let finalResult = text;
+      if (schemaType && text) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.answer !== undefined) {
+            finalResult = String(parsed.answer);
+          }
+        } catch (error) {
+          // Keep original text if JSON parsing fails
         }
-      } catch (e) {
-        // Keep original text if JSON parsing fails
+      }
+
+      if (!finalResult || finalResult.trim().length === 0) {
+        const placeholder = '[AI returned no content]';
+
+        logToFile('ai-function-empty', {
+          timestamp: baseTimestamp,
+          attempt,
+          prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
+          finishReason,
+          safety: safetyInfo,
+          message: 'Gemini responded with empty text. Using placeholder instead.',
+        });
+
+        finalResult = placeholder;
+      }
+
+      logToFile('ai-function-response', {
+        timestamp: baseTimestamp,
+        attempt,
+        durationMs,
+        prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
+        response: finalResult?.substring(0, 500) + (finalResult?.length > 500 ? '...' : ''),
+        responseLength: finalResult?.length || 0,
+        schemaType,
+        finishReason,
+        safety: safetyInfo,
+      });
+
+      return finalResult;
+    } catch (error) {
+      const durationMs = Date.now() - start;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      lastError = error;
+
+      logToFile('ai-function-error', {
+        timestamp: baseTimestamp,
+        attempt,
+        durationMs,
+        prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
+        error: errorMessage,
+        stack: error instanceof Error ? error.stack : undefined,
+        schemaType,
+        finishReason,
+        safety: safetyInfo,
+      });
+
+      if (attempt > AI_CONFIG.maxRetries) {
+        break;
+      }
+
+      if (AI_CONFIG.retryDelayMs > 0) {
+        sleepSync(AI_CONFIG.retryDelayMs);
       }
     }
-
-    logToFile('ai-function-response', {
-      timestamp,
-      prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
-      response: finalResult?.substring(0, 500) + (finalResult?.length > 500 ? '...' : ''),
-      responseLength: finalResult?.length || 0,
-      schemaType,
-    });
-
-    return finalResult;
-  } catch (error) {
-    logToFile('ai-function-error', {
-      timestamp,
-      prompt: prompt?.substring(0, 200),
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      schemaType,
-    });
-    throw new Error(`AI function failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+
+  throw new Error(`AI function failed after ${AI_CONFIG.maxRetries + 1} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 };
 
 // Register on both database connections with varargs support
@@ -546,13 +664,6 @@ const executeSheetSql = (spreadsheetId, sheetId, rawSql) => {
     throw new Error(`Reference the sheet table name "${tableName}" in your query.`);
   }
 
-  const sheetTableMatches = sql.match(/"?sheet_[a-zA-Z0-9_]+"?/g) || [];
-  const allowedTable = tableName.toLowerCase();
-  const hasInvalidTable = sheetTableMatches.some((match) => match.replace(/"/g, '').toLowerCase() !== allowedTable);
-  if (hasInvalidTable) {
-    throw new Error('Queries may target only one sheet at a time.');
-  }
-
   const stmt = readOnlyDb.prepare(sql);
   const columnMeta = stmt.columns?.() ?? [];
   const columnNames = columnMeta.map((column) => column.name);
@@ -707,13 +818,6 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
   const tableRegex = new RegExp(`\"?${escapeForRegex(tableName)}\"?`, 'i');
   if (!tableRegex.test(sql)) {
     throw new Error(`Reference the sheet table name "${tableName}" in your statement.`);
-  }
-
-  const sheetTableMatches = sql.match(/"?sheet_[a-zA-Z0-9_]+"?/g) || [];
-  const allowedTable = tableName.toLowerCase();
-  const hasInvalidTable = sheetTableMatches.some((match) => match.replace(/"/g, '').toLowerCase() !== allowedTable);
-  if (hasInvalidTable) {
-    throw new Error('Statements may target only the specified sheet.');
   }
 
   const lowered = sql.toLowerCase();
@@ -1300,6 +1404,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
     '**DATA SIZE STRATEGY**: When working with user data, be mindful of context window usage: (1) For SMALL datasets (~20 cells or fewer): Look at the selected cell context directly and answer questions without SQL queries. (2) For LARGE datasets (>20 cells): Use executeSheetSql to query, aggregate, and analyze. Never load full large datasets into your context - use SQL for filtering, aggregation, and analysis.',
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM reviews.',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
+    '**COLUMN TYPES**: Be careful with column types - columns are often stored as TEXT even when they contain numbers. When performing numeric operations (comparisons, math, sorting), use CAST to convert to the appropriate type. Examples: CAST("grade" AS INTEGER), CAST("price" AS REAL), ORDER BY CAST("year" AS INTEGER). This is especially important for filtering, sorting, and aggregations.',
     'Use `mutateSheetSql` for changing spreadsheet data (UPDATE, INSERT, ALTER TABLE ... ADD COLUMN) or creating new sheets with computed data (CREATE TABLE AS). For CREATE TABLE AS, the sheet parameter can reference any existing sheet (it\'s ignored), and use: CREATE TABLE context.spreadsheet.sheets["NewSheetName"] AS SELECT ... FROM context.spreadsheet.sheets["SourceSheet"]. This creates a new sheet with all computed data in a single SQL operation - perfect for JOINs and combining AI() functions with GROUP BY aggregations. Example: CREATE TABLE context.spreadsheet.sheets["Product Summary"] AS SELECT product, AVG(score), AI(\'Summarize: \' || GROUP_CONCAT(review)) FROM context.spreadsheet.sheets["Reviews"] GROUP BY product.',
     '**VERIFICATION STRATEGY**: After completing data operations (CREATE TABLE, UPDATE, INSERT, etc.), ALWAYS verify that you accomplished what you intended. Do your best to perform a full verification - for example, if a column shouldn\'t have null values or negative values, check for those. Also look at a few sample rows to understand what was actually created. If results are incorrect, investigate and fix the issue. Never declare success without verification.',
     'Use `deleteRows` when the user explicitly asks to delete or remove rows from the spreadsheet. You can delete by specific row numbers (e.g., rowNumbers: [5, 7, 9]) or by condition (e.g., condition: \'"grade" < 10\'). Row numbers stay consistent - if row 7 is deleted, the UI shows rows 5, 6, 8 (not renumbered).',
@@ -2305,6 +2410,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. The AI() function calls Gemini Flash 2.0. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM context.spreadsheet.sheets["Reviews"].',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Column names: The available columns in each sheet are listed in the metadata. Use these exact column names (quoted) in your SQL queries. For example, if you see columns: "scene_number", "page", "text_content", use those names directly in queries like: SELECT "text_content" FROM context.spreadsheet.sheets["Sheet1"] WHERE "scene_number" = 5.',
+    '**COLUMN TYPES**: Be careful with column types - columns are often stored as TEXT even when they contain numbers. When performing numeric operations (comparisons, math, sorting), use CAST to convert to the appropriate type. Examples: CAST("grade" AS INTEGER), CAST("price" AS REAL), ORDER BY CAST("year" AS INTEGER). This is especially important for filtering, sorting, and aggregations.',
     '**VERIFICATION STRATEGY**: After completing data operations (CREATE TABLE, UPDATE, INSERT, etc.), ALWAYS verify that you accomplished what you intended. Do your best to perform a full verification - for example, if a column shouldn\'t have null values or negative values, check for those. Also look at a few sample rows to understand what was actually created. If results are incorrect, investigate and fix the issue. Never declare success without verification.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',

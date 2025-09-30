@@ -213,6 +213,8 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
 
           let aggregatedText = '';
           let currentToolCalls: ToolCall[] = [];
+          let ackSnapshot: string | null = null;
+          let toolCallsSeen = false;
 
           for await (const event of streamChat(spreadsheetId, {
             query: trimmed,
@@ -221,20 +223,30 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           })) {
             if (event.type === 'delta') {
               aggregatedText += event.text;
-              const text = aggregatedText;
-              setMessages((prev) =>
-                prev.map((message) =>
-                  message.id === assistantId
-                    ? { ...message, content: text }
-                    : message
-                )
-              );
+              if (!toolCallsSeen && ackSnapshot === null) {
+                const text = aggregatedText;
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === assistantId
+                      ? { ...message, content: text }
+                      : message
+                  )
+                );
+              }
             } else if (event.type === 'tool_call') {
+              toolCallsSeen = true;
+              if (ackSnapshot === null) {
+                ackSnapshot = (aggregatedText || '').trim() || aggregatedText;
+              }
               currentToolCalls = [...currentToolCalls, event.toolCall];
               setMessages((prev) =>
                 prev.map((message) =>
                   message.id === assistantId
-                    ? { ...message, toolCalls: currentToolCalls }
+                    ? {
+                        ...message,
+                        content: ackSnapshot || message.content,
+                        toolCalls: currentToolCalls,
+                      }
                     : message
                 )
               );
@@ -255,9 +267,65 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
               onAssistantToolCalls?.(null);
               break;
             } else if (event.type === 'done') {
-              const finalMessages = mapChatHistoryToMessages(event.messages ?? []);
-              setMessages(finalMessages.length ? finalMessages : [welcomeMessage]);
-              onAssistantToolCalls?.(event.assistantMessage.tool_calls ?? null);
+              const finalAssistant = event.assistantMessage;
+              const finalToolCalls = finalAssistant.tool_calls ?? (currentToolCalls.length > 0 ? currentToolCalls : null);
+              const finalContent = finalAssistant.content ?? '';
+              const finalTimestamp = finalAssistant.created_at ? new Date(finalAssistant.created_at) : new Date();
+
+              if (!toolCallsSeen) {
+                const resolvedContent = finalContent.trim().length > 0 ? finalContent : aggregatedText || '';
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === assistantId
+                      ? {
+                          ...message,
+                          id: finalAssistant.id ?? message.id,
+                          content: resolvedContent,
+                          toolCalls: finalToolCalls,
+                          isStreaming: false,
+                          contextRange: finalAssistant.context_range ?? null,
+                          timestamp: finalTimestamp,
+                        }
+                      : message
+                  )
+                );
+              } else {
+                const ackContent = ackSnapshot || (aggregatedText || '').trim() || aggregatedText;
+
+                setMessages((prev) => {
+                  const withoutStreaming = prev.map((message) => {
+                    if (message.id !== assistantId) {
+                      return message;
+                    }
+
+                    return {
+                      ...message,
+                      content: ackContent || message.content,
+                      toolCalls: finalToolCalls ?? message.toolCalls,
+                      isStreaming: false,
+                      timestamp: message.timestamp,
+                    };
+                  });
+
+                  if (finalContent && finalContent.trim().length > 0) {
+                    const finalMessage: Message = {
+                      id: finalAssistant.id ?? `${assistantId}-final`,
+                      role: 'assistant',
+                      content: finalContent,
+                      timestamp: finalTimestamp,
+                      contextRange: finalAssistant.context_range ?? null,
+                      toolCalls: null,
+                      isStreaming: false,
+                    };
+
+                    return [...withoutStreaming, finalMessage];
+                  }
+
+                  return withoutStreaming;
+                });
+              }
+
+              onAssistantToolCalls?.(finalToolCalls ?? null);
               break;
             }
           }
@@ -515,243 +583,228 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted text-foreground"
                   }`}>
-                    {message.role === 'assistant' ? (
-                      <div
-                        className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none"
-                        dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-                      />
-                    ) : (
-                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
-                    )}
-                    {message.contextRange && message.role === 'assistant' && (
-                      <p className="text-xs italic text-muted-foreground mt-2 flex items-center gap-1">
-                        <Info className="w-3 h-3" />
-                        {formatRangeDisplay(message.contextRange)}
-                      </p>
-                    )}
-                    {message.role === 'assistant' && message.isStreaming && (
-                      <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
-                        <Sparkles className="w-3 h-3 animate-spin" />
-                        Streaming response...
-                      </p>
-                    )}
-                    {message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0 && (
-                      <div className="mt-3 space-y-3">
-                        {message.toolCalls.map((toolCall, index) => {
-                          // Handle highlight clear tool calls
-                          if (toolCall.kind === 'highlight_clear') {
-                            return (
+                    {message.role === 'assistant'
+                      ? (() => {
+                          const hasToolCalls = !!(message.toolCalls && message.toolCalls.length > 0);
+
+                          const renderAssistantContent = () => (
+                            message.content ? (
                               <div
-                                key={`highlight-clear-${index}`}
-                                className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
-                              >
-                                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                                  <X className="h-4 w-4" />
-                                  <span>Cleared all highlights</span>
-                                  <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
-                                    {toolCall.status === 'error' ? 'Error' : 'Clear'}
-                                  </Badge>
-                                </div>
-                                {toolCall.error && (
-                                  <p className="mt-2 text-xs text-destructive">
-                                    {toolCall.error}
-                                  </p>
-                                )}
-                              </div>
-                            );
-                          }
+                                className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none"
+                                dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+                              />
+                            ) : null
+                          );
 
-                          // Handle highlight tool calls separately
-                          if (toolCall.kind === 'highlight') {
-                            return (
-                              <div
-                                key={`highlight-${index}`}
-                                className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
-                              >
-                                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                                  <Sparkles className="h-4 w-4" />
-                                  <span>
-                                    Highlighted cells {toolCall.range || (toolCall.condition ? `where ${toolCall.condition}` : 'unknown')}
-                                    {toolCall.rowNumbers && ` (${toolCall.rowNumbers.length} row${toolCall.rowNumbers.length !== 1 ? 's' : ''})`}
-                                    {toolCall.sheetName
-                                      ? ` in ${toolCall.sheetName}`
-                                      : toolCall.sheetId
-                                      ? ` in sheet ${toolCall.sheetId}`
-                                      : ''}
-                                  </span>
-                                  <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
-                                    {toolCall.status === 'error' ? 'Error' : 'Highlight'}
-                                  </Badge>
-                                </div>
-                                {toolCall.color && (
-                                  <div className="mt-2 flex items-center gap-2">
-                                    <div className={`w-4 h-4 rounded-sm ${
-                                      toolCall.color === 'yellow' ? 'bg-yellow-400' :
-                                      toolCall.color === 'red' ? 'bg-red-400' :
-                                      toolCall.color === 'green' ? 'bg-green-400' :
-                                      toolCall.color === 'blue' ? 'bg-blue-400' :
-                                      toolCall.color === 'orange' ? 'bg-orange-400' :
-                                      toolCall.color === 'purple' ? 'bg-purple-400' :
-                                      'bg-yellow-400'
-                                    }`} />
-                                    <span className="text-xs text-muted-foreground capitalize">{toolCall.color}</span>
-                                  </div>
-                                )}
-                                {toolCall.message && (
-                                  <p className="mt-2 text-xs text-muted-foreground italic">
-                                    {toolCall.message}
-                                  </p>
-                                )}
-                                {toolCall.error && (
-                                  <p className="mt-2 text-xs text-destructive">
-                                    {toolCall.error}
-                                  </p>
-                                )}
-                              </div>
-                            );
-                          }
+                          const renderContextRange = () => (
+                            message.contextRange ? (
+                              <p className="text-xs italic text-muted-foreground mt-2 flex items-center gap-1">
+                                <Info className="w-3 h-3" />
+                                {formatRangeDisplay(message.contextRange)}
+                              </p>
+                            ) : null
+                          );
 
-                          // Handle SQL tool calls (read/write)
-                          const sqlMarkdown = toolCall.sql
-                            ? '```sql\n' + toolCall.sql.trim() + '\n```'
-                            : '_No SQL provided._';
-                          const isMutation = toolCall.kind === 'write';
-                          const hasRowInfo = !isMutation && (typeof toolCall.rowCount === 'number' || toolCall.truncated);
-                          const displayedColumns = toolCall.columns ? toolCall.columns.slice(0, 6) : [];
-                          const remainingColumns = toolCall.columns && toolCall.columns.length > displayedColumns.length
-                            ? toolCall.columns.length - displayedColumns.length
-                            : 0;
-                          const Icon = isMutation ? Hammer : Database;
-                          const badgeVariant = toolCall.status === 'error' ? 'destructive' : isMutation ? 'default' : 'secondary';
-                          const badgeLabel = toolCall.status === 'error' ? 'Error' : isMutation ? 'Mutation' : 'Query';
-                          const statusLabel = toolCall.status === 'error'
-                            ? isMutation
-                              ? 'SQL mutation error'
-                              : 'SQL tool error'
-                            : isMutation
-                            ? 'SQL mutation executed'
-                            : 'SQL query executed';
-                          const addedColumns = toolCall.addedColumns ?? [];
-                          const referenceLabel = toolCall.reference ?? toolCall.sheetId;
+                          const renderStreamingIndicator = () => (
+                            <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
+                              <Sparkles className="w-3 h-3 animate-spin" />
+                              Streaming response...
+                            </p>
+                          );
 
-                          return (
-                            <div
-                              key={`${toolCall.name ?? 'sql-tool'}-${index}`}
-                              className={`rounded-md border border-border/70 p-3 text-sm ${
-                                isMutation ? 'bg-primary/5' : 'bg-background/70'
-                              }`}
-                            >
-                              <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-                                <Icon className="h-4 w-4" />
-                                <span>
-                                  {statusLabel}
-                                  {toolCall.sheetName
-                                    ? ` on ${toolCall.sheetName}`
-                                    : toolCall.sheetId
-                                    ? ` on ${toolCall.sheetId}`
-                                    : ''}
-                                </span>
-                                <Badge variant={badgeVariant}>{badgeLabel}</Badge>
-                              </div>
-
-                              {referenceLabel && (
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                  Reference: {referenceLabel}
-                                </p>
-                              )}
-
-                              {hasRowInfo && toolCall.status !== 'error' && (
-                                <p className="mt-2 text-xs text-muted-foreground">
-                                  Rows returned: {toolCall.rowCount ?? 0}
-                                  {toolCall.truncated ? '+' : ''}
-                                  {displayedColumns.length > 0 && (
-                                    <span>
-                                      {' '}
-                                      • Columns: {displayedColumns.join(', ')}
-                                      {remainingColumns > 0 ? `, +${remainingColumns} more` : ''}
-                                    </span>
-                                  )}
-                                </p>
-                              )}
-
-                              {isMutation && toolCall.status !== 'error' && (
-                                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                                  {typeof toolCall.operation === 'string' && toolCall.operation.length > 0 && (
-                                    <p>
-                                      Operation: {toolCall.operation.charAt(0).toUpperCase() + toolCall.operation.slice(1)}
-                                    </p>
-                                  )}
-                                  {typeof toolCall.changes === 'number' && (
-                                    <p>Rows affected: {toolCall.changes}</p>
-                                  )}
-                                  {toolCall.lastInsertRowid !== undefined && toolCall.lastInsertRowid !== null && (
-                                    <p>Last inserted row id: {toolCall.lastInsertRowid}</p>
-                                  )}
-                                  {addedColumns.length > 0 && (
-                                    <p>
-                                      Added columns: {addedColumns.map((col) => col.header || col.sqlName).join(', ')}
-                                    </p>
-                                  )}
-                                </div>
-                              )}
-
-                              {toolCall.error && (
-                                <p className="mt-2 text-xs text-destructive">
-                                  {toolCall.error}
-                                </p>
-                              )}
-
-                              {toolCall.sql && (
-                                <div className="mt-3">
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-2"
-                                        onClick={() => {
-                                          navigator.clipboard.writeText(toolCall.sql || '');
-                                          toast('SQL copied to clipboard');
-                                        }}
-                                      >
-                                        <Copy className="h-3 w-3" />
-                                        Copy SQL
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom" className="p-0 w-[600px] max-h-96 overflow-auto">
-                                      <div style={{ width: '600px' }}>
-                                        <SyntaxHighlighter
-                                          language="sql"
-                                          style={oneDark}
-                                          PreTag="div"
-                                          customStyle={{
-                                            margin: 0,
-                                            fontSize: '0.75rem',
-                                            borderRadius: '0.375rem',
-                                            width: '600px',
-                                            overflowWrap: 'break-word',
-                                            wordWrap: 'break-word',
-                                            wordBreak: 'break-word',
-                                          }}
-                                          codeTagProps={{
-                                            style: {
-                                              whiteSpace: 'pre-wrap',
-                                              wordBreak: 'break-word',
-                                            }
-                                          }}
-                                        >
-                                          {toolCall.sql || ''}
-                                        </SyntaxHighlighter>
+                          const renderToolCalls = () => (
+                            <div className="mt-3 space-y-3">
+                              {message.toolCalls!.map((toolCall, index) => {
+                                // existing rendering (unchanged) ...
+                                if (toolCall.kind === 'highlight_clear') {
+                                  return (
+                                    <div
+                                      key={`highlight-clear-${index}`}
+                                      className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                                        <X className="h-4 w-4" />
+                                        <span>Cleared all highlights</span>
+                                        <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
+                                          {toolCall.status === 'error' ? 'Error' : 'Clear'}
+                                        </Badge>
                                       </div>
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </div>
-                              )}
+                                      {toolCall.error && (
+                                        <p className="mt-2 text-xs text-destructive">
+                                          {toolCall.error}
+                                        </p>
+                                      )}
+                                    </div>
+                                  );
+                                }
+
+                                if (toolCall.kind === 'highlight') {
+                                  return (
+                                    <div
+                                      key={`highlight-${index}`}
+                                      className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                                        <Sparkles className="h-4 w-4" />
+                                        <span>
+                                          Highlighted cells {toolCall.range || (toolCall.condition ? `where ${toolCall.condition}` : 'unknown')}
+                                          {toolCall.rowNumbers && ` (${toolCall.rowNumbers.length} row${toolCall.rowNumbers.length !== 1 ? 's' : ''})`}
+                                          {toolCall.sheetName
+                                            ? ` in ${toolCall.sheetName}`
+                                            : toolCall.sheetId
+                                            ? ` in sheet ${toolCall.sheetId}`
+                                            : ''}
+                                        </span>
+                                        <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
+                                          {toolCall.status === 'error' ? 'Error' : 'Highlight'}
+                                        </Badge>
+                                      </div>
+                                      {toolCall.color && (
+                                        <div className="mt-2 flex items-center gap-2">
+                                          <div className={`w-4 h-4 rounded-sm ${
+                                            toolCall.color === 'yellow' ? 'bg-yellow-400' :
+                                            toolCall.color === 'red' ? 'bg-red-400' :
+                                            toolCall.color === 'green' ? 'bg-green-400' :
+                                            toolCall.color === 'blue' ? 'bg-blue-400' :
+                                            toolCall.color === 'orange' ? 'bg-orange-400' :
+                                            toolCall.color === 'purple' ? 'bg-purple-400' :
+                                            'bg-yellow-400'
+                                          }`} />
+                                          <span className="text-xs text-muted-foreground capitalize">{toolCall.color}</span>
+                                        </div>
+                                      )}
+                                      {toolCall.message && (
+                                        <p className="mt-2 text-xs text-muted-foreground italic">
+                                          {toolCall.message}
+                                        </p>
+                                      )}
+                                      {toolCall.error && (
+                                        <p className="mt-2 text-xs text-destructive">
+                                          {toolCall.error}
+                                        </p>
+                                      )}
+                                    </div>
+                                  );
+                                }
+
+                                const sqlMarkdown = toolCall.sql
+                                  ? '```sql\n' + toolCall.sql.trim() + '\n```'
+                                  : '_No SQL provided._';
+                                const isMutation = toolCall.kind === 'write';
+                                const hasRowInfo = !isMutation && (typeof toolCall.rowCount === 'number' || toolCall.truncated);
+                                const displayedColumns = toolCall.columns ? toolCall.columns.slice(0, 6) : [];
+
+                                return (
+                                  <div
+                                    key={`tool-${index}`}
+                                    className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
+                                  >
+                                    <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                                      <Hammer className="h-4 w-4" />
+                                      <span className="font-medium">
+                                        {toolCall.kind === 'write'
+                                          ? 'Data mutation'
+                                          : toolCall.kind === 'read'
+                                          ? 'Data query'
+                                          : toolCall.kind === 'temp_sql'
+                                          ? 'Temporary SQL execution'
+                                          : 'Tool call'}
+                                      </span>
+                                      <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
+                                        {toolCall.status === 'error' ? 'Error' : toolCall.kind === 'write' ? 'Write' : 'Read'}
+                                      </Badge>
+                                    </div>
+                                    <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+                                      {(toolCall.sheetName || toolCall.sheetId) && (
+                                        <p>
+                                          Target sheet:{' '}
+                                          <span className="font-medium text-foreground">
+                                            {toolCall.sheetName || toolCall.sheetId}
+                                          </span>
+                                        </p>
+                                      )}
+                                      {hasRowInfo && (
+                                        <p>
+                                          Rows: {typeof toolCall.rowCount === 'number' ? toolCall.rowCount : 'unknown'}
+                                          {toolCall.truncated ? ' (truncated)' : ''}
+                                        </p>
+                                      )}
+                                      {toolCall.columns && toolCall.columns.length > 0 && (
+                                        <p>
+                                          Columns: {displayedColumns.join(', ')}
+                                          {toolCall.columns.length > displayedColumns.length ? '…' : ''}
+                                        </p>
+                                      )}
+                                      {typeof toolCall.changes === 'number' && (
+                                        <p>Changes: {toolCall.changes}</p>
+                                      )}
+                                      {toolCall.error && (
+                                        <p className="text-destructive">{toolCall.error}</p>
+                                      )}
+                                    </div>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <div className="mt-3 bg-background/80 border border-border rounded p-2 text-xs font-mono text-left max-h-48 overflow-auto">
+                                          <pre className="whitespace-pre-wrap break-words text-foreground/90">
+                                            {toolCall.sql?.trim() || 'No SQL provided.'}
+                                          </pre>
+                                        </div>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="max-w-xl">
+                                        <div className="space-y-2">
+                                          <p className="text-xs text-muted-foreground">SQL</p>
+                                          <SyntaxHighlighter
+                                            language="sql"
+                                            style={oneDark}
+                                            customStyle={{
+                                              fontSize: '0.75rem',
+                                              borderRadius: '0.375rem',
+                                              padding: '0.75rem',
+                                              backgroundColor: 'var(--background)',
+                                              wordBreak: 'break-word',
+                                            }}
+                                            codeTagProps={{
+                                              style: {
+                                                whiteSpace: 'pre-wrap',
+                                                wordBreak: 'break-word',
+                                              }
+                                            }}
+                                          >
+                                            {toolCall.sql || ''}
+                                          </SyntaxHighlighter>
+                                        </div>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </div>
+                                );
+                              })}
                             </div>
                           );
-                        })}
-                      </div>
-                    )}
+
+                          if (!hasToolCalls) {
+                            return (
+                              <>
+                                {renderAssistantContent()}
+                                {renderContextRange()}
+                                {message.isStreaming && renderStreamingIndicator()}
+                              </>
+                            );
+                          }
+
+                          return (
+                            <>
+                              {message.isStreaming && renderAssistantContent()}
+                              {message.isStreaming && renderContextRange()}
+                              {message.isStreaming && renderStreamingIndicator()}
+                              {renderToolCalls()}
+                              {!message.isStreaming && renderAssistantContent()}
+                              {!message.isStreaming && renderContextRange()}
+                            </>
+                          );
+                        })()
+                      : (
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+                      )}
                   </div>
                   <p className="text-xs text-muted-foreground px-1">
                     {formatTime(message.timestamp)}

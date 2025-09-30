@@ -94,12 +94,22 @@ const SpreadsheetView = () => {
         return Math.max(maxRow + 10, rowCount);
       })();
 
+  const toCellString = (value: unknown) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    try {
+      return String(value);
+    } catch {
+      return '';
+    }
+  };
+
   // Calculate actual data row count (excluding empty rows)
   const dataRowCount = activeSheet ? (() => {
     const rowsWithData = new Set<number>();
     Object.keys(activeSheet.cells).forEach(key => {
       const row = parseInt(key.split('-')[0]);
-      if (!isNaN(row) && activeSheet.cells[key]?.trim()) {
+      if (!isNaN(row) && toCellString(activeSheet.cells[key]).trim()) {
         rowsWithData.add(row);
       }
     });
