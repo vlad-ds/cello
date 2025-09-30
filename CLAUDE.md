@@ -95,15 +95,19 @@ Single-file Express server using better-sqlite3. Data stored in `data/app.db` (g
 When `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` is set:
 - Chat panel sends user messages + selected cell context to local API
 - API constructs prompt with sheet metadata (table names, column mappings)
-- AI model can call four tools:
+- AI model can call seven tools:
   - `executeSheetSql` – Read-only queries (SELECT)
   - `mutateSheetSql` – Data mutations (UPDATE, INSERT, ALTER TABLE ADD COLUMN)
+  - `deleteRows` – Delete rows by row numbers or SQL condition (row numbers stay consistent)
   - `highlights_add` – Highlight cells/ranges with colored overlays (supports layering)
   - `highlights_clear` – Remove all active highlights
+  - `filter_add` – Hide rows that don't match SQL condition
+  - `filter_clear` – Remove all active filters
 - Tool calls are logged in `chat_messages.tool_calls` as JSON
 - Assistant auto-retries on SQL errors with alternative approaches
 - Conversation history persisted per spreadsheet (local API only)
 - Highlights are client-side only (not persisted), cleared on page refresh
+- Row deletion preserves row numbers (e.g., deleting row 7 shows 5, 6, 8)
 
 **Sheet References:**
 AI uses simple relative pointers in SQL that get automatically rewritten:

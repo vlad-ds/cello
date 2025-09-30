@@ -484,7 +484,7 @@ export const SpreadsheetGrid = ({
                 onMouseEnter={() => handleRowHeaderMouseEnter(rowIndex)}
                 onClick={() => handleRowHeaderClick(rowIndex)}
               >
-                {displayRowNumbers ? displayRowNumbers[rowIndex] + 1 : rowIndex + 1}
+                {displayRowNumbers ? displayRowNumbers[rowIndex] : rowIndex + 1}
                 {rowIndex === ROWS - 1 && (
                   <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                     <button

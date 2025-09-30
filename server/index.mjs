@@ -913,9 +913,10 @@ const handleAnthropicChat = async (req, res, context) => {
 
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
-    'You have access to six tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), and filter_clear (to remove filters).',
+    'You have access to seven tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), deleteRows (for removing rows), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), and filter_clear (to remove filters).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
+    'Use `deleteRows` when the user explicitly asks to delete or remove rows from the spreadsheet. You can delete by specific row numbers (e.g., rowNumbers: [5, 7, 9]) or by condition (e.g., condition: \'"grade" < 10\'). Row numbers stay consistent - if row 7 is deleted, the UI shows rows 5, 6, 8 (not renumbered).',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
     'For data-based highlighting: Query with executeSheetSql to analyze data, then use highlights_add with a condition. Example: To highlight highest and lowest grades in different colors, query for thresholds, then call highlights_add twice with different conditions and colors.',
@@ -996,6 +997,36 @@ const handleAnthropicChat = async (req, res, context) => {
           },
         },
         required: ['sheet', 'sql'],
+      },
+    },
+    {
+      name: 'deleteRows',
+      description:
+        'Delete specific rows from the spreadsheet. Row numbers remain consistent after deletion (gaps are preserved). Use this when the user explicitly asks to delete or remove rows.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+          rowNumbers: {
+            type: 'array',
+            items: {
+              type: 'integer',
+            },
+            description:
+              'Array of specific row numbers to delete (e.g., [1, 3, 5]). Mutually exclusive with condition.',
+          },
+          condition: {
+            type: 'string',
+            description:
+              'SQL boolean expression defining which rows to delete. Use double quotes for column names. Examples: \'"grade" < 10\', \'"status" = \\\'inactive\\\'\', \'"revenue" = 0\'. Mutually exclusive with rowNumbers.',
+          },
+        },
+        required: ['sheet'],
       },
     },
     {
@@ -1200,7 +1231,7 @@ const handleAnthropicChat = async (req, res, context) => {
         let toolCallRecord = null;
 
         try {
-          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear';
+          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear' || toolName === 'deleteRows';
           const isSqlTool = toolName === 'executeSheetSql' || toolName === 'mutateSheetSql';
 
           if (isSqlTool && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
@@ -1268,6 +1299,68 @@ const handleAnthropicChat = async (req, res, context) => {
               rowCount: execution.rowCount,
               truncated: execution.truncated,
               columns: execution.columns,
+              reference: sheetReferenceLabel,
+            };
+          } else if (toolName === 'deleteRows') {
+            if (!sheetMeta || !sheetMeta.id) {
+              throw new Error('Valid sheet reference is required for deleteRows.');
+            }
+
+            const rowNumbers = toolInput.rowNumbers;
+            const condition = toolInput.condition;
+
+            if (!rowNumbers && !condition) {
+              throw new Error('Either "rowNumbers" or "condition" is required for deleteRows.');
+            }
+            if (rowNumbers && condition) {
+              throw new Error('Cannot specify both "rowNumbers" and "condition".');
+            }
+
+            const tableName = tableNameForSheet(sheetMeta.id);
+            let deletedCount = 0;
+
+            if (rowNumbers && Array.isArray(rowNumbers)) {
+              // Delete specific row numbers
+              const validRows = rowNumbers.filter(num => typeof num === 'number' && num > 0);
+              if (validRows.length === 0) {
+                throw new Error('No valid row numbers provided.');
+              }
+
+              const placeholders = validRows.map(() => '?').join(', ');
+              const deleteSql = `DELETE FROM "${tableName}" WHERE row_number IN (${placeholders})`;
+              const result = db.prepare(deleteSql).run(...validRows);
+              deletedCount = result.changes || 0;
+            } else if (condition) {
+              // Delete rows matching condition
+              const deleteSql = `DELETE FROM "${tableName}" WHERE ${condition}`;
+              try {
+                const result = db.prepare(deleteSql).run();
+                deletedCount = result.changes || 0;
+              } catch (sqlError) {
+                throw new Error(`Invalid delete condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
+              }
+            }
+
+            touchSheet(sheetMeta.id);
+
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              deletedCount,
+              rowNumbers: rowNumbers,
+              condition: condition,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'delete',
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              deletedCount,
+              rowNumbers: rowNumbers,
+              condition: condition,
+              status: 'ok',
               reference: sheetReferenceLabel,
             };
           } else if (toolName === 'highlights_add') {
@@ -1451,7 +1544,8 @@ const handleAnthropicChat = async (req, res, context) => {
           const isHighlightClear = toolName === 'highlights_clear';
           const isFilter = toolName === 'filter_add';
           const isFilterClear = toolName === 'filter_clear';
-          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear;
+          const isDelete = toolName === 'deleteRows';
+          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear || isDelete;
 
           toolResultContent = JSON.stringify({
             ok: false,
@@ -1465,6 +1559,7 @@ const handleAnthropicChat = async (req, res, context) => {
           else if (isHighlight) kind = 'highlight';
           else if (isFilterClear) kind = 'filter_clear';
           else if (isFilter) kind = 'filter';
+          else if (isDelete) kind = 'delete';
           else if (isMutation) kind = 'write';
 
           toolCallRecord = {
@@ -1474,7 +1569,8 @@ const handleAnthropicChat = async (req, res, context) => {
             sheetName: sheetMeta?.name,
             sql: isNonSqlTool ? undefined : trimmedSql,
             range: isHighlight ? toolInput.range : undefined,
-            condition: isFilter ? toolInput.condition : undefined,
+            condition: isFilter || isDelete ? toolInput.condition : undefined,
+            rowNumbers: isDelete ? toolInput.rowNumbers : undefined,
             status: 'error',
             operation: isNonSqlTool ? undefined : (isMutation ? undefined : 'select'),
             error: toolError instanceof Error ? toolError.message : String(toolError),

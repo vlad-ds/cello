@@ -596,10 +596,10 @@ const SpreadsheetView = () => {
       columnHeaders.push('COLUMN_1', 'COLUMN_2', 'COLUMN_3', 'COLUMN_4', 'COLUMN_5');
     }
 
-    // When filters are active, extract the actual row numbers for display
-    const displayRowNumbers = hasActiveFilters
-      ? Array.from(new Set(Object.keys(cells).map(key => parseInt(key.split('-')[0])))).sort((a, b) => a - b)
-      : undefined;
+    // Extract the actual row numbers from data for display (handles filters and deleted rows)
+    const actualRowNumbers = Array.from(new Set(Object.keys(cells).map(key => parseInt(key.split('-')[0])))).sort((a, b) => a - b);
+    const hasGaps = actualRowNumbers.length > 0 && actualRowNumbers.some((num, idx) => idx > 0 && num !== actualRowNumbers[idx - 1] + 1);
+    const displayRowNumbers = (hasActiveFilters || hasGaps) ? actualRowNumbers : undefined;
 
     return { cells, columnHeaders, hasActiveFilters, displayRowNumbers };
   };
@@ -644,7 +644,7 @@ const SpreadsheetView = () => {
     if (!toolCalls || toolCalls.length === 0) return;
 
     // Handle data mutations - refresh the sheet
-    const hasMutation = toolCalls.some(call => call?.kind === 'write' && call.status === 'ok');
+    const hasMutation = toolCalls.some(call => (call?.kind === 'write' || call?.kind === 'delete') && call.status === 'ok');
     if (hasMutation) {
       refreshActiveSheetFromServer();
     }
