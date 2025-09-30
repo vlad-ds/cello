@@ -74,6 +74,19 @@ export const sqliteDataClient: DataClient = {
     return data;
   },
 
+  async updateSpreadsheet(id: string, updates: { name: string }): Promise<void> {
+    await request(`/spreadsheets/${id}`, {
+      method: 'PATCH',
+      body: updates,
+    });
+  },
+
+  async deleteSpreadsheet(id: string): Promise<void> {
+    await request(`/spreadsheets/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
   async listSheets(spreadsheetId: string): Promise<SheetRecord[]> {
     const data = await request<SheetRecord[]>(`/spreadsheets/${spreadsheetId}/sheets`);
     return data;
@@ -111,6 +124,13 @@ export const sqliteDataClient: DataClient = {
     await request(`/sheets/${sheetId}/cells`, {
       method: 'POST',
       body: { row, col, value },
+    });
+  },
+
+  async importBulkData(sheetId: string, headers: string[], rows: string[][]): Promise<void> {
+    await request(`/sheets/${sheetId}/import-data`, {
+      method: 'POST',
+      body: { headers, rows },
     });
   },
 

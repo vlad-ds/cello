@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Plus, X, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SheetData } from "@/pages/Index";
 import { cn } from "@/lib/utils";
@@ -76,8 +76,19 @@ export const SheetTabs = ({
                 onClick={() => onSheetSelect(sheet.id)}
                 onDoubleClick={() => handleSheetDoubleClick(sheet)}
                 className="px-3 py-2 text-sm font-medium"
+                title="Double-click to rename"
               >
                 {sheet.name}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSheetDoubleClick(sheet);
+                }}
+                className="opacity-0 group-hover:opacity-100 p-1 hover:bg-accent rounded transition-all duration-200"
+                title="Rename sheet"
+              >
+                <Pencil className="w-3 h-3" />
               </button>
               {sheets.length > 1 && (
                 <button

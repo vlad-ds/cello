@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Undo, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,7 @@ import { SpreadsheetGrid } from "@/components/SpreadsheetGrid";
 import { SheetTabs } from "@/components/SheetTabs";
 import { CoordinateDisplay } from "@/components/CoordinateDisplay";
 import { ChatPanel } from "@/components/ChatPanel";
+import { FileImport } from "@/components/FileImport";
 import {
   dataClient,
   isSupabaseBackend,
@@ -55,6 +56,9 @@ const SpreadsheetView = () => {
   const [history, setHistory] = useState<Action[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(true);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editedTitle, setEditedTitle] = useState("");
+  const gridContainerRef = useRef<HTMLDivElement>(null);
   const [activeHighlights, setActiveHighlights] = useState<CellHighlight[]>(() => {
     try {
       const saved = localStorage.getItem(`highlights-${spreadsheetId}`);
@@ -68,6 +72,7 @@ const SpreadsheetView = () => {
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
 
   // Calculate effective row count: when filters are active, only render rows with data
+  // Otherwise, calculate actual row count from cells
   const effectiveRowCount = activeSheet?.hasActiveFilters
     ? (() => {
         const rowsWithData = new Set<number>();
@@ -77,12 +82,69 @@ const SpreadsheetView = () => {
         });
         return rowsWithData.size;
       })()
-    : rowCount;
+    : (() => {
+        if (!activeSheet) return rowCount;
+        // Get the maximum row number from cells
+        const rowNumbers = Object.keys(activeSheet.cells).map(key => {
+          const row = parseInt(key.split('-')[0]);
+          return isNaN(row) ? 0 : row;
+        });
+        const maxRow = rowNumbers.length > 0 ? Math.max(...rowNumbers) : 0;
+        // Add buffer rows for adding new data
+        return Math.max(maxRow + 10, rowCount);
+      })();
+
+  // Calculate actual data row count (excluding empty rows)
+  const dataRowCount = activeSheet ? (() => {
+    const rowsWithData = new Set<number>();
+    Object.keys(activeSheet.cells).forEach(key => {
+      const row = parseInt(key.split('-')[0]);
+      if (!isNaN(row) && activeSheet.cells[key]?.trim()) {
+        rowsWithData.add(row);
+      }
+    });
+    return rowsWithData.size;
+  })() : 0;
 
   useEffect(() => {
     if (spreadsheetId) {
       loadSpreadsheet();
     }
+  }, [spreadsheetId]);
+
+  // Handle pending import from SpreadsheetsList
+  useEffect(() => {
+    const checkPendingImport = async () => {
+      const pendingImportStr = sessionStorage.getItem('pendingImport');
+      if (!pendingImportStr) return;
+
+      try {
+        const pendingImport = JSON.parse(pendingImportStr);
+        if (pendingImport.spreadsheetId === spreadsheetId && pendingImport.sheetId && pendingImport.data) {
+          // Clear the pending import
+          sessionStorage.removeItem('pendingImport');
+
+          // Import the data
+          const { data, sheetId } = pendingImport;
+
+          // Create table with correct number of columns
+          await createDynamicTable(sheetId, data.headers.length);
+
+          // Use bulk import for efficiency
+          await dataClient.importBulkData(sheetId, data.headers, data.rows);
+
+          // Reload to show the imported data
+          await loadSpreadsheet();
+
+          toast(`Imported ${data.rows.length} rows successfully`);
+        }
+      } catch (error) {
+        console.error('Error processing pending import:', error);
+        sessionStorage.removeItem('pendingImport');
+      }
+    };
+
+    checkPendingImport();
   }, [spreadsheetId]);
 
   // Persist highlights to localStorage
@@ -443,19 +505,19 @@ const SpreadsheetView = () => {
 
   const addNewSheet = async () => {
     if (!spreadsheetId) return;
-    
+
     try {
       const newSheet = await dataClient.createSheet(spreadsheetId, `Sheet ${sheets.length + 1}`);
-      
+
       await createDynamicTable(newSheet.id, 5); // Start with 5 columns
-      
+
       const newSheetData: SheetData = {
         id: newSheet.id,
         name: newSheet.name,
         cells: {},
         columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
       };
-      
+
       setSheets(prev => [...prev, newSheetData]);
       setActiveSheetId(newSheet.id);
     } catch (error) {
@@ -463,19 +525,76 @@ const SpreadsheetView = () => {
     }
   };
 
+  const handleFileImport = async (data: { sheetName: string; headers: string[]; rows: string[][] }) => {
+    if (!spreadsheetId) return;
+
+    try {
+      // Create new sheet with imported name
+      const newSheet = await dataClient.createSheet(spreadsheetId, data.sheetName);
+
+      // Create table with correct number of columns
+      await createDynamicTable(newSheet.id, data.headers.length);
+
+      // Use bulk import for efficiency
+      await dataClient.importBulkData(newSheet.id, data.headers, data.rows);
+
+      // Reload spreadsheet to show the new sheet
+      await loadSpreadsheet();
+
+      // Switch to the newly imported sheet
+      setActiveSheetId(newSheet.id);
+
+      toast(`Imported ${data.rows.length} rows successfully`);
+    } catch (error) {
+      console.error('Error importing file:', error);
+      toast("Failed to import file data.");
+    }
+  };
+
   const renameSheet = async (sheetId: string, newName: string) => {
     try {
       await dataClient.updateSheetName(sheetId, newName);
-      
-      setSheets(prevSheets => 
-        prevSheets.map(sheet => 
-          sheet.id === sheetId 
+
+      setSheets(prevSheets =>
+        prevSheets.map(sheet =>
+          sheet.id === sheetId
             ? { ...sheet, name: newName }
             : sheet
         )
       );
     } catch (error) {
       console.error('Error renaming sheet:', error);
+    }
+  };
+
+  const handleTitleClick = () => {
+    if (spreadsheet) {
+      setEditedTitle(spreadsheet.name);
+      setIsEditingTitle(true);
+    }
+  };
+
+  const handleTitleSave = async () => {
+    if (!spreadsheetId || !editedTitle.trim()) {
+      setIsEditingTitle(false);
+      return;
+    }
+
+    try {
+      await dataClient.updateSpreadsheet(spreadsheetId, { name: editedTitle.trim() });
+      setSpreadsheet(prev => prev ? { ...prev, name: editedTitle.trim() } : null);
+      setIsEditingTitle(false);
+    } catch (error) {
+      console.error('Error renaming spreadsheet:', error);
+      setIsEditingTitle(false);
+    }
+  };
+
+  const handleTitleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleTitleSave();
+    } else if (e.key === 'Escape') {
+      setIsEditingTitle(false);
     }
   };
 
@@ -704,6 +823,15 @@ const SpreadsheetView = () => {
 
       // If clear was called, replace all highlights; otherwise append
       setActiveHighlights(hasClear ? newHighlights : prev => [...prev, ...newHighlights]);
+
+      // Scroll to first new highlight for the active sheet
+      if (newHighlights.length > 0 && activeSheet) {
+        const firstHighlight = newHighlights.find(h => h.sheetId === activeSheet.id);
+        if (firstHighlight) {
+          // Use setTimeout to ensure the highlights are rendered first
+          setTimeout(() => scrollToHighlight(firstHighlight), 100);
+        }
+      }
     }
 
     // Handle filter clear
@@ -774,6 +902,44 @@ const SpreadsheetView = () => {
 
   const clearHighlights = () => {
     setActiveHighlights([]);
+  };
+
+  const scrollToHighlight = (highlight: CellHighlight) => {
+    if (!gridContainerRef.current || !activeSheet) return;
+
+    let targetRow: number | undefined;
+    let targetCol: number | undefined;
+
+    // Determine target cell from highlight
+    if (highlight.range) {
+      // Parse range like "A1:B5" to get first cell
+      const match = highlight.range.match(/^([A-Z]+)(\d+)/);
+      if (match) {
+        targetCol = match[1].charCodeAt(0) - 65; // Convert A->0, B->1, etc
+        targetRow = parseInt(match[2]) - 1; // Convert 1-based to 0-based
+      }
+    } else if (highlight.rowNumbers && highlight.rowNumbers.length > 0) {
+      // Use first row number
+      targetRow = highlight.rowNumbers[0];
+      targetCol = 0;
+    }
+
+    if (targetRow !== undefined && targetCol !== undefined) {
+      // Estimate row height and column width
+      const rowHeight = getRowHeight(targetRow);
+      const headerHeight = 40; // Approximate header height
+      const scrollTop = targetRow * rowHeight;
+
+      // Scroll to the target row
+      gridContainerRef.current.scrollTop = Math.max(0, scrollTop - headerHeight);
+
+      // Update selection to highlight the cell
+      setSelection({
+        start: { row: targetRow, col: targetCol },
+        end: { row: targetRow, col: targetCol },
+        type: 'cell'
+      });
+    }
   };
 
   const clearFilters = async (sheetId?: string) => {
@@ -899,14 +1065,32 @@ const SpreadsheetView = () => {
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back
           </Button>
-          <h1 className="text-xl font-semibold text-foreground">
-            {spreadsheet.name}
-          </h1>
+          {isEditingTitle ? (
+            <input
+              type="text"
+              value={editedTitle}
+              onChange={(e) => setEditedTitle(e.target.value)}
+              onBlur={handleTitleSave}
+              onKeyDown={handleTitleKeyDown}
+              className="text-xl font-semibold text-foreground bg-transparent border-b-2 border-primary outline-none px-2 py-1"
+              autoFocus
+              onFocus={(e) => e.target.select()}
+            />
+          ) : (
+            <h1
+              className="text-xl font-semibold text-foreground cursor-pointer hover:text-primary transition-colors px-2 py-1"
+              onClick={handleTitleClick}
+              title="Click to rename"
+            >
+              {spreadsheet.name}
+            </h1>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <Button 
-            onClick={undo} 
-            variant="outline" 
+          <FileImport onImport={handleFileImport} />
+          <Button
+            onClick={undo}
+            variant="outline"
             size="sm"
             disabled={historyIndex < 0}
           >
@@ -926,7 +1110,7 @@ const SpreadsheetView = () => {
             style={{ width: `calc(100% - ${chatPanelWidth}px)` }}
           >
             {/* Coordinate display */}
-            <div className="border-b border-border bg-card/30 px-4 py-2">
+            <div className="border-b border-border bg-card/30 px-4 py-2 flex items-center justify-between">
               <CoordinateDisplay
                 selection={selection}
                 cellContent={
@@ -935,10 +1119,13 @@ const SpreadsheetView = () => {
                     : undefined
                 }
               />
+              <div className="text-sm text-muted-foreground">
+                {dataRowCount.toLocaleString()} rows
+              </div>
             </div>
 
             {/* Spreadsheet grid */}
-            <div className="flex-1 overflow-auto">
+            <div ref={gridContainerRef} className="flex-1 overflow-auto">
               {activeSheet ? (
                 <SpreadsheetGrid
                   sheet={activeSheet}

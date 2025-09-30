@@ -329,9 +329,15 @@ const computeRangeLabel = (selectedCells = {}) => {
 };
 
 const getSheetColumns = (sheetId) => {
-  return db
-    .prepare('SELECT column_index, header, sql_name FROM sheet_columns WHERE sheet_id = ? ORDER BY column_index')
-    .all(sheetId);
+  const tableName = tableNameForSheet(sheetId);
+  const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all();
+  return columns
+    .filter(col => col.name !== 'row_number')
+    .map((col, index) => ({
+      column_index: index,
+      header: col.name, // Column name IS the header (sanitized)
+      sql_name: col.name,
+    }));
 };
 
 const getSheetById = (sheetId) => {
@@ -362,17 +368,30 @@ const listSheetsForSpreadsheet = (spreadsheetId) => {
 const escapeForRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const buildSheetMetadataSummary = (spreadsheetId) => {
-  const sheets = listSheetsForSpreadsheet(spreadsheetId);
+  const sheets = db
+    .prepare('SELECT id, name FROM sheets WHERE spreadsheet_id = ? ORDER BY datetime(created_at)')
+    .all(spreadsheetId)
+    .map((sheet) => {
+      const tableName = tableNameForSheet(sheet.id);
+      // Get actual column names from the table
+      const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all();
+      const columnNames = columns
+        .filter(col => col.name !== 'row_number')
+        .map(col => `"${col.name}"`)
+        .join(', ');
+
+      return {
+        ...sheet,
+        slug: slugifySheetName(sheet.name),
+        columns: columnNames || 'No columns yet',
+      };
+    });
+
   const lines = sheets.map((sheet) => {
     const tableName = tableNameForSheet(sheet.id);
-    const columnSummaries = sheet.columns?.length
-      ? sheet.columns
-          .slice(0, 20)
-          .map((column) => `${column.header} → "${column.sql_name}"`)
-          .join(', ')
-      : 'No headers yet. Default SQL names: "column_1", "column_2", ...';
-    return `${sheet.name} (sheetId: ${sheet.id}, ref: context.spreadsheet.sheets["${sheet.name}"], alias: context.spreadsheet.sheets["${sheet.slug}"] → table "${tableName}") columns: ${columnSummaries}`;
+    return `${sheet.name} (sheetId: ${sheet.id}, ref: context.spreadsheet.sheets["${sheet.name}"], alias: context.spreadsheet.sheets["${sheet.slug}"] → table "${tableName}") columns: ${sheet.columns}`;
   });
+
   return {
     sheets,
     summaryText: lines.join('\n'),
@@ -417,66 +436,8 @@ const resolveSheetReference = (sheetMetas, rawValue) => {
   return null;
 };
 
-const createHeaderFromSqlName = (sqlName, fallbackIndex) => {
-  if (!sqlName || typeof sqlName !== 'string') {
-    return defaultHeader(fallbackIndex);
-  }
-
-  const raw = sqlName.trim();
-  if (!raw) {
-    return defaultHeader(fallbackIndex);
-  }
-
-  if (/^[a-z0-9_]+$/.test(raw)) {
-    return raw;
-  }
-
-  const normalized = raw
-    .replace(/^col_/, '')
-    .replace(/[_\s]+/g, ' ')
-    .trim();
-
-  if (!normalized) {
-    return defaultHeader(fallbackIndex);
-  }
-
-  return normalized
-    .split(' ')
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-};
-
-const syncNewSheetColumns = (sheetId, tableName) => {
-  const existingColumns = getSheetColumns(sheetId);
-  const knownSqlNames = new Set(existingColumns.map((column) => column.sql_name));
-  const tableInfo = db.prepare(`PRAGMA table_info("${tableName}")`).all();
-
-  let nextIndex = existingColumns.length;
-  const added = [];
-
-  for (const column of tableInfo) {
-    if (!column || !column.name || column.name === 'row_number' || knownSqlNames.has(column.name)) {
-      continue;
-    }
-
-    const header = createHeaderFromSqlName(column.name, nextIndex);
-    db.prepare(
-      'INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name) VALUES (?, ?, ?, ?)'
-    ).run(sheetId, nextIndex, header, column.name);
-
-    added.push({
-      header,
-      sqlName: column.name,
-      columnIndex: nextIndex,
-    });
-
-    knownSqlNames.add(column.name);
-    nextIndex += 1;
-  }
-
-  return added;
-};
+// Functions removed: createHeaderFromSqlName, syncNewSheetColumns
+// Column metadata is now read directly from PRAGMA table_info instead of sheet_columns table
 
 const normalizeRowForJson = (row) => {
   return Object.fromEntries(
@@ -645,15 +606,6 @@ const executeCreateTableAs = (spreadsheetId, rawSql) => {
     .filter(col => col.name !== 'row_number' && !col.name.startsWith('column_'))
     .map(col => col.name);
 
-  // Register columns in sheet_columns
-  columnNames.forEach((colName, index) => {
-    const sqlName = sanitizeSqlIdentifier(colName, defaultSqlName(index));
-    const header = colName;
-    db.prepare(
-      'INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name) VALUES (?, ?, ?, ?)'
-    ).run(newSheet.id, index, header, sqlName);
-  });
-
   // Add row_number column if it doesn't exist
   const hasRowNumber = columns.some(col => col.name === 'row_number');
   if (!hasRowNumber) {
@@ -747,11 +699,6 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
     lastInsertRowid = lastInsertRowid.toString();
   }
 
-  let addedColumns = [];
-  if (operation === 'alter') {
-    addedColumns = syncNewSheetColumns(sheetId, tableName);
-  }
-
   touchSheet(sheetId);
 
   return {
@@ -760,20 +707,16 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
     operation,
     changes,
     lastInsertRowid,
-    addedColumns,
   };
 };
 
 const ensureUniqueSqlName = (sheetId, desiredName, columnIndexToIgnore) => {
+  const columns = getSheetColumns(sheetId);
   let candidate = desiredName;
   let suffix = 1;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const existing = db
-      .prepare(
-        'SELECT column_index FROM sheet_columns WHERE sheet_id = ? AND sql_name = ?'
-      )
-      .get(sheetId, candidate);
+    const existing = columns.find(col => col.sql_name === candidate);
     if (!existing || existing.column_index === columnIndexToIgnore) {
       return candidate;
     }
@@ -793,16 +736,13 @@ const ensureColumnCount = (sheetId, targetCount) => {
   let columnIndex = columns.length;
   while (columnIndex < targetCount) {
     const header = defaultHeader(columnIndex);
-    const baseSqlName = defaultSqlName(columnIndex);
+    const baseSqlName = sanitizeSqlIdentifier(header, defaultSqlName(columnIndex));
     let sqlName = baseSqlName;
     let suffix = 1;
     while (existingSqlNames.has(sqlName)) {
-      sqlName = `${baseSqlName}_${++suffix}`;
+      sqlName = `${baseSqlName}_${suffix}`;
     }
     db.prepare(`ALTER TABLE "${tableName}" ADD COLUMN "${sqlName}" TEXT`).run();
-    db.prepare(
-      'INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name) VALUES (?, ?, ?, ?)' 
-    ).run(sheetId, columnIndex, header, sqlName);
     existingSqlNames.add(sqlName);
     columnIndex += 1;
   }
@@ -819,16 +759,13 @@ const renameColumn = (sheetId, columnIndex, newHeaderRaw) => {
 
   const tableName = ensureSheetTable(sheetId);
   const fallback = defaultSqlName(columnIndex);
-  const desiredSql = sanitizeSqlIdentifier(newHeaderRaw, fallback);
-  const uniqueSql = ensureUniqueSqlName(sheetId, desiredSql, columnIndex);
   const finalHeader = newHeaderRaw?.trim() ? newHeaderRaw.trim() : defaultHeader(columnIndex);
+  const desiredSql = sanitizeSqlIdentifier(finalHeader, fallback);
+  const uniqueSql = ensureUniqueSqlName(sheetId, desiredSql, columnIndex);
 
   if (column.sql_name !== uniqueSql) {
     db.prepare(`ALTER TABLE "${tableName}" RENAME COLUMN "${column.sql_name}" TO "${uniqueSql}"`).run();
   }
-
-  db.prepare('UPDATE sheet_columns SET header = ?, sql_name = ? WHERE sheet_id = ? AND column_index = ?')
-    .run(finalHeader, uniqueSql, sheetId, columnIndex);
 };
 
 const setCellValue = (sheetId, rowNumber, columnIndex, value) => {
@@ -929,11 +866,8 @@ const removeColumn = (sheetId, columnIndex) => {
   }
 
   const tableName = ensureSheetTable(sheetId);
-
   db.prepare(`ALTER TABLE "${tableName}" DROP COLUMN "${column.sql_name}"`).run();
-  db.prepare('DELETE FROM sheet_columns WHERE sheet_id = ? AND column_index = ?').run(sheetId, columnIndex);
-  db.prepare('UPDATE sheet_columns SET column_index = column_index - 1 WHERE sheet_id = ? AND column_index > ?')
-    .run(sheetId, columnIndex);
+  // No need to update sheet_columns table - column info now comes from PRAGMA
 };
 
 const createSheet = (spreadsheetId, name, columns = null) => {
@@ -968,19 +902,15 @@ const createSheet = (spreadsheetId, name, columns = null) => {
 
     columns.forEach((columnName, index) => {
       const header = columnName?.trim() || defaultHeader(index);
-      const baseSqlName = sanitizeSqlIdentifier(columnName, defaultSqlName(index));
+      const baseSqlName = sanitizeSqlIdentifier(header, defaultSqlName(index));
 
       let sqlName = baseSqlName;
       let suffix = 1;
       while (existingSqlNames.has(sqlName)) {
-        sqlName = `${baseSqlName}_${++suffix}`;
+        sqlName = `${baseSqlName}_${suffix}`;
       }
 
       db.prepare(`ALTER TABLE "${tableName}" ADD COLUMN "${sqlName}" TEXT`).run();
-      db.prepare(
-        'INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name) VALUES (?, ?, ?, ?)'
-      ).run(id, index, header, sqlName);
-
       existingSqlNames.add(sqlName);
     });
   }
@@ -1023,6 +953,55 @@ app.get('/spreadsheets/:id', (req, res) => {
   res.json(spreadsheet);
 });
 
+app.patch('/spreadsheets/:id', (req, res) => {
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Name is required.' });
+  }
+
+  const spreadsheet = db.prepare('SELECT id FROM spreadsheets WHERE id = ?').get(req.params.id);
+  if (!spreadsheet) {
+    return res.status(404).json({ error: 'Spreadsheet not found.' });
+  }
+
+  const timestamp = now();
+  db.prepare('UPDATE spreadsheets SET name = ?, updated_at = ? WHERE id = ?')
+    .run(name.trim(), timestamp, req.params.id);
+
+  res.status(204).send();
+});
+
+app.delete('/spreadsheets/:id', (req, res) => {
+  const spreadsheet = db.prepare('SELECT id FROM spreadsheets WHERE id = ?').get(req.params.id);
+  if (!spreadsheet) {
+    return res.status(404).json({ error: 'Spreadsheet not found.' });
+  }
+
+  // Get all sheets for this spreadsheet
+  const sheets = db.prepare('SELECT id FROM sheets WHERE spreadsheet_id = ?').all(req.params.id);
+
+  // Delete all sheet tables
+  sheets.forEach(sheet => {
+    const tableName = tableNameForSheet(sheet.id);
+    try {
+      db.prepare(`DROP TABLE IF EXISTS "${tableName}"`).run();
+    } catch (error) {
+      console.error(`Error dropping table ${tableName}:`, error);
+    }
+  });
+
+  // Delete chat messages
+  db.prepare('DELETE FROM chat_messages WHERE spreadsheet_id = ?').run(req.params.id);
+
+  // Delete sheets
+  db.prepare('DELETE FROM sheets WHERE spreadsheet_id = ?').run(req.params.id);
+
+  // Delete spreadsheet
+  db.prepare('DELETE FROM spreadsheets WHERE id = ?').run(req.params.id);
+
+  res.status(204).send();
+});
+
 app.get('/spreadsheets/:id/sheets', (req, res) => {
   const rows = db.prepare(
     'SELECT * FROM sheets WHERE spreadsheet_id = ? ORDER BY datetime(created_at)'
@@ -1047,6 +1026,74 @@ app.post('/spreadsheets/:id/sheets', (req, res) => {
     } else {
       res.status(400).json({ error: error.message });
     }
+  }
+});
+
+app.post('/sheets/:id/import-data', (req, res) => {
+  const { headers, rows } = req.body ?? {};
+
+  if (!Array.isArray(headers) || !Array.isArray(rows)) {
+    return res.status(400).json({ error: 'Headers and rows arrays are required.' });
+  }
+
+  const sheet = db.prepare('SELECT spreadsheet_id FROM sheets WHERE id = ?').get(req.params.id);
+  if (!sheet) {
+    return res.status(404).json({ error: 'Sheet not found.' });
+  }
+
+  const tableName = tableNameForSheet(req.params.id);
+
+  try {
+    // Start transaction for performance
+    const insertMany = db.transaction((headers, rows) => {
+      // Sanitize headers to create SQL column names
+      const usedNames = new Set();
+      const sqlColumns = headers.map((header, idx) => {
+        let sqlName = sanitizeSqlIdentifier(header, `column_${idx + 1}`);
+        // Handle duplicates
+        let finalName = sqlName;
+        let suffix = 1;
+        while (usedNames.has(finalName)) {
+          finalName = `${sqlName}_${suffix++}`;
+        }
+        usedNames.add(finalName);
+        return finalName;
+      });
+
+      // Create columns if they don't exist
+      const existingCols = db.prepare(`PRAGMA table_info("${tableName}")`).all();
+      const existingColNames = new Set(existingCols.map(c => c.name));
+
+      sqlColumns.forEach(colName => {
+        if (!existingColNames.has(colName)) {
+          db.prepare(`ALTER TABLE "${tableName}" ADD COLUMN "${colName}" TEXT`).run();
+        }
+      });
+
+      // Insert data rows (NO HEADER ROW - headers are column names now)
+      for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+        const row = rows[rowIdx];
+        const rowNumber = rowIdx + 1;
+
+        const values = row.slice(0, sqlColumns.length);
+        const cols = sqlColumns.map(c => `"${c}"`).join(', ');
+        const placeholders = values.map(() => '?').join(', ');
+
+        const stmt = db.prepare(
+          `INSERT INTO "${tableName}" (row_number, ${cols}) VALUES (?, ${placeholders})`
+        );
+        stmt.run(rowNumber, ...values);
+      }
+    });
+
+    insertMany(headers, rows);
+    touchSheet(req.params.id);
+    touchSpreadsheet(sheet.spreadsheet_id);
+
+    res.json({ success: true, rowCount: rows.length });
+  } catch (error) {
+    console.error('Bulk import error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -2075,6 +2122,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     'You are an assistant helping users work with spreadsheet data.',
     'You have access to four functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
+    'Column names: The available columns in each sheet are listed in the metadata. Use these exact column names (quoted) in your SQL queries. For example, if you see columns: "scene_number", "page", "text_content", use those names directly in queries like: SELECT "text_content" FROM context.spreadsheet.sheets["Sheet1"] WHERE "scene_number" = 5.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',

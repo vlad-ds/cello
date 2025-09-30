@@ -42,6 +42,24 @@ export const supabaseDataClient: DataClient = {
     return (data as SpreadsheetRecord | null) ?? null;
   },
 
+  async updateSpreadsheet(id: string, updates: { name: string }): Promise<void> {
+    const { error } = await supabase
+      .from('spreadsheets')
+      .update(updates)
+      .eq('id', id);
+
+    if (error) handleError(error);
+  },
+
+  async deleteSpreadsheet(id: string): Promise<void> {
+    const { error } = await supabase
+      .from('spreadsheets')
+      .delete()
+      .eq('id', id);
+
+    if (error) handleError(error);
+  },
+
   async listSheets(spreadsheetId: string): Promise<SheetRecord[]> {
     const { data, error } = await supabase
       .from('sheets')
@@ -107,6 +125,21 @@ export const supabaseDataClient: DataClient = {
     });
 
     if (error) handleError(error);
+  },
+
+  async importBulkData(sheetId: string, headers: string[], rows: string[][]): Promise<void> {
+    // Bulk import not supported in Supabase mode - fall back to individual syncs
+    for (let col = 0; col < headers.length; col++) {
+      await this.syncCell(sheetId, 0, col, headers[col]);
+    }
+    for (let row = 0; row < rows.length; row++) {
+      for (let col = 0; col < rows[row].length; col++) {
+        const value = rows[row][col];
+        if (value) {
+          await this.syncCell(sheetId, row + 1, col, value);
+        }
+      }
+    }
   },
 
   async loadSheetData(sheetId: string): Promise<SheetTableData> {

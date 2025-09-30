@@ -80,12 +80,15 @@ export interface DataClient {
   listSpreadsheets(): Promise<SpreadsheetRecord[]>;
   createSpreadsheet(name: string): Promise<SpreadsheetRecord>;
   getSpreadsheet(id: string): Promise<SpreadsheetRecord | null>;
+  updateSpreadsheet(id: string, updates: { name: string }): Promise<void>;
+  deleteSpreadsheet(id: string): Promise<void>;
   listSheets(spreadsheetId: string): Promise<SheetRecord[]>;
   createSheet(spreadsheetId: string, name: string): Promise<SheetRecord>;
   updateSheetName(sheetId: string, name: string): Promise<void>;
   deleteSheet(sheetId: string): Promise<void>;
   createDynamicTable(sheetId: string, columnCount: number): Promise<void>;
   syncCell(sheetId: string, row: number, col: number, value: string): Promise<void>;
+  importBulkData(sheetId: string, headers: string[], rows: string[][]): Promise<void>;
   loadSheetData(sheetId: string): Promise<SheetTableData>;
   getChatMessages(spreadsheetId: string): Promise<ChatMessage[]>;
   sendChatMessage(

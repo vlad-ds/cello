@@ -4,15 +4,28 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Plus, Folder, Calendar } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Plus, Folder, Calendar, Upload, Trash2 } from "lucide-react";
 import { dataClient, type SpreadsheetRecord } from "@/integrations/database";
 import { useNavigate } from "react-router-dom";
+import { FileImport } from "@/components/FileImport";
+import { toast } from "@/components/ui/sonner";
 
 const SpreadsheetsList = () => {
   const [spreadsheets, setSpreadsheets] = useState<SpreadsheetRecord[]>([]);
   const [newSpreadsheetName, setNewSpreadsheetName] = useState("");
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [deleteDialogSpreadsheet, setDeleteDialogSpreadsheet] = useState<SpreadsheetRecord | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -45,6 +58,42 @@ const SpreadsheetsList = () => {
     }
   };
 
+  const handleFileImport = async (data: { sheetName: string; headers: string[]; rows: string[][] }) => {
+    try {
+      // Create new spreadsheet with the sheet name
+      const spreadsheet = await dataClient.createSpreadsheet(data.sheetName);
+
+      // Create sheet with the same name
+      const sheet = await dataClient.createSheet(spreadsheet.id, data.sheetName);
+
+      // Import the data using the backend's sheet sync
+      // For now, we'll navigate to the spreadsheet and let SpreadsheetView handle the import
+      // Store the import data temporarily and navigate
+      sessionStorage.setItem('pendingImport', JSON.stringify({
+        spreadsheetId: spreadsheet.id,
+        sheetId: sheet.id,
+        data
+      }));
+
+      navigate(`/spreadsheet/${spreadsheet.id}`);
+    } catch (error) {
+      console.error('Error importing file as new spreadsheet:', error);
+      toast("Failed to create spreadsheet from file.");
+    }
+  };
+
+  const handleDeleteSpreadsheet = async (spreadsheet: SpreadsheetRecord) => {
+    try {
+      await dataClient.deleteSpreadsheet(spreadsheet.id);
+      setSpreadsheets(prev => prev.filter(s => s.id !== spreadsheet.id));
+      toast("Spreadsheet deleted successfully");
+      setDeleteDialogSpreadsheet(null);
+    } catch (error) {
+      console.error('Error deleting spreadsheet:', error);
+      toast("Failed to delete spreadsheet");
+    }
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
@@ -74,13 +123,15 @@ const SpreadsheetsList = () => {
             </p>
           </div>
           
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="flex items-center gap-2">
-                <Plus className="w-4 h-4" />
-                New Spreadsheet
-              </Button>
-            </DialogTrigger>
+          <div className="flex items-center gap-2">
+            <FileImport onImport={handleFileImport} />
+            <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+              <DialogTrigger asChild>
+                <Button className="flex items-center gap-2">
+                  <Plus className="w-4 h-4" />
+                  New Spreadsheet
+                </Button>
+              </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Create New Spreadsheet</DialogTitle>
@@ -109,6 +160,7 @@ const SpreadsheetsList = () => {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         {spreadsheets.length === 0 ? (
@@ -126,13 +178,24 @@ const SpreadsheetsList = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {spreadsheets.map((spreadsheet) => (
-              <Card 
-                key={spreadsheet.id} 
-                className="cursor-pointer hover:shadow-lg transition-shadow"
+              <Card
+                key={spreadsheet.id}
+                className="cursor-pointer hover:shadow-lg transition-shadow group relative"
                 onClick={() => navigate(`/spreadsheet/${spreadsheet.id}`)}
               >
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 text-destructive hover:text-destructive hover:bg-destructive/10"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteDialogSpreadsheet(spreadsheet);
+                  }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
+                  <CardTitle className="flex items-center gap-2 pr-8">
                     <Folder className="w-5 h-5 text-primary" />
                     {spreadsheet.name}
                   </CardTitle>
@@ -154,6 +217,27 @@ const SpreadsheetsList = () => {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!deleteDialogSpreadsheet} onOpenChange={() => setDeleteDialogSpreadsheet(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Spreadsheet</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{deleteDialogSpreadsheet?.name}"? This action cannot be undone and will permanently delete all sheets and data in this spreadsheet.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteDialogSpreadsheet && handleDeleteSpreadsheet(deleteDialogSpreadsheet)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
