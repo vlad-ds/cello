@@ -39,7 +39,9 @@ The backend is controlled by environment variables (`.env` file):
 
 - `VITE_USE_SUPABASE` – Set to `true` to use Supabase instead of local SQLite. Default is false.
 - `VITE_SQLITE_API_URL` – Local API origin (defaults to `http://localhost:4000`)
-- `GEMINI_API_KEY` – Required for AI assistant features when using local API
+- `AI_PROVIDER` – AI model to use: `anthropic` (default) or `gemini`
+- `ANTHROPIC_API_KEY` – Required for AI assistant when using Claude Sonnet 4.5 (default provider)
+- `GEMINI_API_KEY` – Required for AI assistant when using Gemini Flash
 
 **Important:** When using the local SQLite backend (default), the API must be running for the app to work. Without it, spreadsheet operations will fail.
 
@@ -64,7 +66,8 @@ Single-file Express server using better-sqlite3. Data stored in `data/app.db` (g
 - Column headers drive SQL column names (sanitized as `sql_name`)
 - Renaming headers triggers `ALTER TABLE ... RENAME COLUMN`
 - Removing columns drops the SQL column and reindexes metadata
-- AI assistant uses Gemini Flash with function calling (SQL query/mutation tools)
+- AI assistant uses Claude Sonnet 4.5 (default) or Gemini Flash with function/tool calling
+- Highlights support layering (multiple colors for different values simultaneously)
 
 ### Frontend
 
@@ -87,23 +90,34 @@ Single-file Express server using better-sqlite3. Data stored in `data/app.db` (g
 - `ChatPanel` – AI assistant with persisted conversation history (SQLite only), renders markdown responses
 - `SheetTabs` – Sheet switcher
 
-### AI Assistant (Gemini Integration)
+### AI Assistant (Claude Sonnet 4.5 / Gemini Integration)
 
-When `GEMINI_API_KEY` is set:
+When `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` is set:
 - Chat panel sends user messages + selected cell context to local API
 - API constructs prompt with sheet metadata (table names, column mappings)
-- Gemini model can call two functions:
+- AI model can call four tools:
   - `executeSheetSql` – Read-only queries (SELECT)
   - `mutateSheetSql` – Data mutations (UPDATE, INSERT, ALTER TABLE ADD COLUMN)
+  - `highlights_add` – Highlight cells/ranges with colored overlays (supports layering)
+  - `highlights_clear` – Remove all active highlights
 - Tool calls are logged in `chat_messages.tool_calls` as JSON
 - Assistant auto-retries on SQL errors with alternative approaches
 - Conversation history persisted per spreadsheet (local API only)
+- Highlights are client-side only (not persisted), cleared on page refresh
 
 **Sheet References:**
-AI can reference sheets via:
-- Sheet ID directly
-- `context.spreadsheet.sheets["Sheet Name"]`
-- `context.spreadsheet.sheets["sheet_slug"]` (normalized name)
+AI uses simple relative pointers in SQL that get automatically rewritten:
+- `context.spreadsheet.sheets["Sheet Name"]` → actual table name
+- `context.spreadsheet.sheets["sheet_slug"]` → actual table name
+- Backend automatically substitutes complex table names (e.g., `sheet_<uuid>`)
+- This avoids errors from manually typing complex identifiers
+
+**Highlight Layering:**
+Multiple highlights can coexist with different colors:
+- Range-based: `highlights_add(range: "A1:B5", color: "yellow")`
+- Value-based: `highlights_add(column: "grade", values: [28, 4], color: "green")`
+- Claude automatically calls `highlights_add` multiple times for different colors
+- Example: Green for highest grade, red for lowest grade in same view
 
 ## Important Implementation Details
 
@@ -138,12 +152,14 @@ When `VITE_USE_SUPABASE=true`:
 - Wrap schema changes in try/catch (columns may already exist)
 - Touch spreadsheet/sheet timestamps when modifying data
 
-### Testing SQL Tools Locally
-1. Ensure `GEMINI_API_KEY` is in `.env`
-2. Restart `npm run server:watch`
-3. Select cells in the spreadsheet UI
-4. Ask the assistant to query or modify data
-5. Check `data/app.db` with `sqlite3 data/app.db` to verify changes
+### Testing AI Tools Locally
+1. Ensure `ANTHROPIC_API_KEY` (recommended) or `GEMINI_API_KEY` is in `.env`
+2. Optionally set `AI_PROVIDER=anthropic` or `AI_PROVIDER=gemini`
+3. Restart `npm run server:watch`
+4. Select cells in the spreadsheet UI
+5. Ask the assistant to query, modify, or highlight data
+6. Check `data/app.db` with `sqlite3 data/app.db` to verify changes
+7. Logs are written to `data/logs/anthropic-*.log` or `data/logs/gemini-*.log`
 
 ## Project Structure
 
@@ -163,6 +179,41 @@ src/
   hooks/
     useSpreadsheetSync.ts # Cell sync logic
 ```
+
+## Lessons Learned
+
+### Claude Sonnet 4.5 vs Gemini Flash
+- **Claude Sonnet 4.5** (default, recommended):
+  - More reliable tool calling with fewer malformed calls
+  - Better at autonomous error recovery (analyzes errors and adjusts strategy)
+  - Automatically layers highlights without prompting (e.g., green + red for highest/lowest)
+  - No special thinking budget needed for spreadsheet tasks
+  - Cleaner conversation flow (10 iteration limit vs 4)
+
+- **Gemini Flash**:
+  - Requires MALFORMED_FUNCTION_CALL retry logic
+  - More prone to table name construction errors (hyphens vs underscores)
+  - Needs explicit escaping instructions in system prompt
+  - Lower token limit can cause issues with complex parameters
+
+### Tool Design Patterns
+1. **Prefix consistency**: All related tools share a prefix (`highlights_add`, `highlights_clear`)
+2. **Clear vs append**: When clear + add appear together, replace state instead of early return
+3. **Validation order**: Check tool name before validating required params (avoid false errors)
+4. **SQL rewriting**: Let AI use simple refs, rewrite complex identifiers server-side
+5. **Layering support**: Array-based state enables multiple simultaneous operations
+
+### Frontend State Management
+- Use arrays for multi-item features (highlights, selections) to enable layering
+- Process all tool calls in a batch before returning (avoid early exits)
+- Check for "clear" operations but continue processing subsequent "add" operations
+- Filter by sheetId when passing highlights to grid components
+
+### Debugging AI Tools
+- Log all requests/responses to separate files per provider
+- Include iteration count, tool name, and full payloads
+- Log both success and error cases for tool execution
+- Use descriptive file names: `anthropic-request.log`, `anthropic-tool-call.log`, etc.
 
 ## Notes
 
