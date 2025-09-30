@@ -46,75 +46,65 @@ export const SheetTabs = ({
   };
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="p-4 border-b border-border">
-        <h2 className="text-sm font-medium text-foreground">Sheets</h2>
-      </div>
-
+    <div className="flex items-center h-full gap-2 pl-6 pr-2 overflow-x-auto">
       {/* Sheet Tabs */}
-      <div className="flex-1 p-2 space-y-1">
-        {sheets.map((sheet) => (
-          <div
-            key={sheet.id}
-            className={cn(
-              "w-full rounded-md transition-colors",
-              activeSheetId === sheet.id
-                ? "bg-tab-active text-tab-active-foreground"
-                : "hover:bg-accent hover:text-accent-foreground"
-            )}
-          >
-            {editingSheetId === sheet.id ? (
-              <input
-                value={editValue}
-                onChange={(e) => setEditValue(e.target.value)}
-                onBlur={() => handleSheetRename(sheet.id)}
-                onKeyDown={(e) => handleKeyDown(e, sheet.id)}
-                className="w-full px-3 py-2 bg-transparent text-sm font-medium outline-none border border-grid-selected-border rounded-md"
-                autoFocus
-                onFocus={(e) => e.target.select()}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <div className="flex items-center group">
+      {sheets.map((sheet) => (
+        <div
+          key={sheet.id}
+          className={cn(
+            "flex items-center rounded-t-md border-b-2 transition-colors whitespace-nowrap",
+            activeSheetId === sheet.id
+              ? "bg-background border-primary text-foreground"
+              : "bg-card/50 border-transparent hover:bg-accent hover:text-accent-foreground"
+          )}
+        >
+          {editingSheetId === sheet.id ? (
+            <input
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={() => handleSheetRename(sheet.id)}
+              onKeyDown={(e) => handleKeyDown(e, sheet.id)}
+              className="px-3 py-2 bg-transparent text-sm font-medium outline-none border border-grid-selected-border rounded-md min-w-[100px]"
+              autoFocus
+              onFocus={(e) => e.target.select()}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <div className="flex items-center group">
+              <button
+                onClick={() => onSheetSelect(sheet.id)}
+                onDoubleClick={() => handleSheetDoubleClick(sheet)}
+                className="px-3 py-2 text-sm font-medium"
+              >
+                {sheet.name}
+              </button>
+              {sheets.length > 1 && (
                 <button
-                  onClick={() => onSheetSelect(sheet.id)}
-                  onDoubleClick={() => handleSheetDoubleClick(sheet)}
-                  className="flex-1 text-left px-3 py-2 text-sm font-medium"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSheetDelete(sheet.id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-1 mr-1 hover:bg-destructive/10 hover:text-destructive rounded transition-all duration-200"
+                  title="Delete sheet"
                 >
-                  {sheet.name}
+                  <X className="w-3 h-3" />
                 </button>
-                {sheets.length > 1 && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSheetDelete(sheet.id);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 p-1 mr-2 hover:bg-destructive/10 hover:text-destructive rounded transition-all duration-200"
-                    title="Delete sheet"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
 
       {/* Add Sheet Button */}
-      <div className="p-2 border-t border-border">
-        <Button
-          onClick={onAddSheet}
-          variant="outline"
-          size="sm"
-          className="w-full"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Add Sheet
-        </Button>
-      </div>
+      <Button
+        onClick={onAddSheet}
+        variant="ghost"
+        size="sm"
+        className="shrink-0"
+      >
+        <Plus className="w-4 h-4" />
+      </Button>
     </div>
   );
 };

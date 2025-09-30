@@ -55,7 +55,14 @@ const SpreadsheetView = () => {
   const [history, setHistory] = useState<Action[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeHighlights, setActiveHighlights] = useState<CellHighlight[]>([]);
+  const [activeHighlights, setActiveHighlights] = useState<CellHighlight[]>(() => {
+    try {
+      const saved = localStorage.getItem(`highlights-${spreadsheetId}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeFilters, setActiveFilters] = useState<{ sheetId: string; filters: FilterCondition[] }[]>([]);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
@@ -77,6 +84,13 @@ const SpreadsheetView = () => {
       loadSpreadsheet();
     }
   }, [spreadsheetId]);
+
+  // Persist highlights to localStorage
+  useEffect(() => {
+    if (spreadsheetId) {
+      localStorage.setItem(`highlights-${spreadsheetId}`, JSON.stringify(activeHighlights));
+    }
+  }, [activeHighlights, spreadsheetId]);
 
   const loadSpreadsheet = async () => {
     if (!spreadsheetId) return;
@@ -903,88 +917,91 @@ const SpreadsheetView = () => {
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar with sheet tabs */}
-        <div className="w-48 border-r border-border bg-card/50">
-          <SheetTabs 
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top section with spreadsheet and chat */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Spreadsheet area */}
+          <div
+            className="flex-1 flex flex-col"
+            style={{ width: `calc(100% - ${chatPanelWidth}px)` }}
+          >
+            {/* Coordinate display */}
+            <div className="border-b border-border bg-card/30 px-4 py-2">
+              <CoordinateDisplay
+                selection={selection}
+                cellContent={
+                  activeSheet && selection.start.row === selection.end.row && selection.start.col === selection.end.col
+                    ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
+                    : undefined
+                }
+              />
+            </div>
+
+            {/* Spreadsheet grid */}
+            <div className="flex-1 overflow-auto">
+              {activeSheet ? (
+                <SpreadsheetGrid
+                  sheet={activeSheet}
+                  selection={selection}
+                  onSelectionChange={setSelection}
+                  onCellUpdate={updateCell}
+                  onColumnHeaderUpdate={updateColumnHeader}
+                  onAddColumn={addNewColumn}
+                  onRemoveColumn={removeColumn}
+                  onAddRow={addNewRow}
+                  onClearSelectedCells={clearSelectedCells}
+                  rowCount={effectiveRowCount}
+                  displayRowNumbers={activeSheet.displayRowNumbers}
+                  columnWidths={columnWidths}
+                  rowHeights={rowHeights}
+                  onColumnResize={updateColumnWidth}
+                  onRowResize={updateRowHeight}
+                  getColumnWidth={getColumnWidth}
+                  getRowHeight={getRowHeight}
+                  highlights={activeHighlights.filter(h => h.sheetId === activeSheet.id)}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground">
+                  Loading sheet data...
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Resize handle */}
+          <div
+            className="w-1 bg-border hover:bg-border/80 cursor-col-resize transition-colors"
+            onMouseDown={handleMouseDown}
+          />
+
+          {/* Chat panel */}
+          <div
+            className="bg-card border-l border-border flex flex-col"
+            style={{ width: `${chatPanelWidth}px` }}
+          >
+            <ChatPanel
+              selectedCells={getSelectedCellsContent()}
+              spreadsheetId={spreadsheetId}
+              activeSheetId={activeSheet?.id}
+              onCommand={handleChatCommand}
+              onAssistantToolCalls={handleAssistantToolCalls}
+              highlights={activeHighlights}
+              onClearHighlights={clearHighlights}
+              filters={activeFilters.find(item => item.sheetId === activeSheet?.id)?.filters || []}
+              onClearFilters={() => activeSheet && clearFilters(activeSheet.id)}
+            />
+          </div>
+        </div>
+
+        {/* Sheet tabs at bottom */}
+        <div className="h-12 border-t border-border bg-card">
+          <SheetTabs
             sheets={sheets}
             activeSheetId={activeSheetId}
             onSheetSelect={setActiveSheetId}
             onAddSheet={addNewSheet}
             onSheetRename={renameSheet}
             onSheetDelete={deleteSheet}
-          />
-        </div>
-
-        {/* Spreadsheet area */}
-        <div 
-          className="flex-1 flex flex-col"
-          style={{ width: `calc(100% - 192px - ${chatPanelWidth}px)` }}
-        >
-          {/* Coordinate display */}
-          <div className="border-b border-border bg-card/30 px-4 py-2">
-            <CoordinateDisplay
-              selection={selection}
-              cellContent={
-                activeSheet && selection.start.row === selection.end.row && selection.start.col === selection.end.col
-                  ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
-                  : undefined
-              }
-            />
-          </div>
-
-          {/* Spreadsheet grid */}
-          <div className="flex-1 overflow-auto">
-            {activeSheet ? (
-              <SpreadsheetGrid
-                sheet={activeSheet}
-                selection={selection}
-                onSelectionChange={setSelection}
-                onCellUpdate={updateCell}
-                onColumnHeaderUpdate={updateColumnHeader}
-                onAddColumn={addNewColumn}
-                onRemoveColumn={removeColumn}
-                onAddRow={addNewRow}
-                onClearSelectedCells={clearSelectedCells}
-                rowCount={effectiveRowCount}
-                displayRowNumbers={activeSheet.displayRowNumbers}
-                columnWidths={columnWidths}
-                rowHeights={rowHeights}
-                onColumnResize={updateColumnWidth}
-                onRowResize={updateRowHeight}
-                getColumnWidth={getColumnWidth}
-                getRowHeight={getRowHeight}
-                highlights={activeHighlights.filter(h => h.sheetId === activeSheet.id)}
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                Loading sheet data...
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Resize handle */}
-        <div
-          className="w-1 bg-border hover:bg-border/80 cursor-col-resize transition-colors"
-          onMouseDown={handleMouseDown}
-        />
-
-        {/* Chat panel */}
-        <div 
-          className="bg-card border-l border-border flex flex-col"
-          style={{ width: `${chatPanelWidth}px` }}
-        >
-          <ChatPanel
-            selectedCells={getSelectedCellsContent()}
-            spreadsheetId={spreadsheetId}
-            activeSheetId={activeSheet?.id}
-            onCommand={handleChatCommand}
-            onAssistantToolCalls={handleAssistantToolCalls}
-            highlights={activeHighlights}
-            onClearHighlights={clearHighlights}
-            filters={activeFilters.find(item => item.sheetId === activeSheet?.id)?.filters || []}
-            onClearFilters={() => activeSheet && clearFilters(activeSheet.id)}
           />
         </div>
       </div>
