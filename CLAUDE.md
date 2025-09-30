@@ -39,9 +39,12 @@ The backend is controlled by environment variables (`.env` file):
 
 - `VITE_USE_SUPABASE` – Set to `true` to use Supabase instead of local SQLite. Default is false.
 - `VITE_SQLITE_API_URL` – Local API origin (defaults to `http://localhost:4000`)
-- `AI_PROVIDER` – AI model to use: `anthropic` (default) or `gemini`
-- `ANTHROPIC_API_KEY` – Required for AI assistant when using Claude Sonnet 4.5 (default provider)
-- `GEMINI_API_KEY` – Required for AI assistant when using Gemini Flash
+- `AI_PROVIDER` – AI model for chat assistant: `anthropic` (default) or `gemini`
+- `ANTHROPIC_API_KEY` – Required for AI chat assistant when using Claude Sonnet 4.5 (default chat provider)
+- `GEMINI_API_KEY` – Required for AI chat assistant when using Gemini Flash
+- `AI_FUNCTION_PROVIDER` – AI model for AI() SQL function: `openai` (default) or `gemini`
+- `AI_FUNCTION_MODEL` – Optional model override (defaults: `gpt-4o-mini` for OpenAI, `gemini-2.0-flash-exp` for Gemini)
+- `OPENAI_API_KEY` – Required for AI() SQL function when using OpenAI (default)
 
 **Important:** When using the local SQLite backend (default), the API must be running for the app to work. Without it, spreadsheet operations will fail.
 
@@ -90,7 +93,9 @@ Single-file Express server using better-sqlite3. Data stored in `data/app.db` (g
 - `ChatPanel` – AI assistant with persisted conversation history (SQLite only), renders markdown responses
 - `SheetTabs` – Sheet switcher
 
-### AI Assistant (Claude Sonnet 4.5 / Gemini Integration)
+### AI Integration
+
+**Chat Assistant (Claude Sonnet 4.5 / Gemini Flash)**
 
 When `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` is set:
 - Chat panel sends user messages + selected cell context to local API
@@ -122,6 +127,23 @@ Multiple highlights can coexist with different colors:
 - Value-based: `highlights_add(column: "grade", values: [28, 4], color: "green")`
 - Claude automatically calls `highlights_add` multiple times for different colors
 - Example: Green for highest grade, red for lowest grade in same view
+
+**AI() SQL Function (OpenAI GPT-4o-mini / Gemini Flash)**
+
+The `AI()` function enables AI-powered data processing directly in SQL queries:
+- Default provider: OpenAI with `gpt-4o-mini` model (fast and cost-effective)
+- Alternative: Gemini Flash via `AI_FUNCTION_PROVIDER=gemini`
+- Supports structured outputs with boolean and enum schemas
+- Usage examples:
+  - `SELECT AI('Classify sentiment: ' || review) FROM reviews`
+  - `SELECT AI('Is this spam?', 'boolean') FROM messages` (returns true/false)
+  - `SELECT AI('Categorize: ' || text, '["urgent","normal","low"]') FROM tasks`
+- Configured via environment variables:
+  - `AI_FUNCTION_PROVIDER` – Provider selection (default: `openai`)
+  - `AI_FUNCTION_MODEL` – Model override (default: `gpt-4o-mini` for OpenAI)
+  - `OPENAI_API_KEY` – Required for OpenAI provider
+  - `GEMINI_API_KEY` – Required for Gemini provider
+- Includes retry logic, rate limiting, and comprehensive logging to `data/logs/`
 
 ## Important Implementation Details
 
@@ -156,7 +178,9 @@ When `VITE_USE_SUPABASE=true`:
 - Wrap schema changes in try/catch (columns may already exist)
 - Touch spreadsheet/sheet timestamps when modifying data
 
-### Testing AI Tools Locally
+### Testing AI Features Locally
+
+**Chat Assistant:**
 1. Ensure `ANTHROPIC_API_KEY` (recommended) or `GEMINI_API_KEY` is in `.env`
 2. Optionally set `AI_PROVIDER=anthropic` or `AI_PROVIDER=gemini`
 3. Restart `npm run server:watch`
@@ -164,6 +188,14 @@ When `VITE_USE_SUPABASE=true`:
 5. Ask the assistant to query, modify, or highlight data
 6. Check `data/app.db` with `sqlite3 data/app.db` to verify changes
 7. Logs are written to `data/logs/anthropic-*.log` or `data/logs/gemini-*.log`
+
+**AI() SQL Function:**
+1. Ensure `OPENAI_API_KEY` is in `.env` (or `GEMINI_API_KEY` with `AI_FUNCTION_PROVIDER=gemini`)
+2. Optionally set `AI_FUNCTION_MODEL` to override default model
+3. Restart `npm run server:watch`
+4. Use the chat assistant to run queries with `AI()` function:
+   - Example: "Run this query: SELECT AI('Summarize: ' || description) FROM products"
+5. Function calls are logged to `data/logs/ai-function-*.log`
 
 ## Project Structure
 
@@ -186,7 +218,7 @@ src/
 
 ## Lessons Learned
 
-### Claude Sonnet 4.5 vs Gemini Flash
+### Chat Assistant: Claude Sonnet 4.5 vs Gemini Flash
 - **Claude Sonnet 4.5** (default, recommended):
   - More reliable tool calling with fewer malformed calls
   - Better at autonomous error recovery (analyzes errors and adjusts strategy)
@@ -199,6 +231,20 @@ src/
   - More prone to table name construction errors (hyphens vs underscores)
   - Needs explicit escaping instructions in system prompt
   - Lower token limit can cause issues with complex parameters
+
+### AI() Function: OpenAI vs Gemini
+- **OpenAI GPT-4o-mini** (default, recommended for AI() function):
+  - Extremely cost-effective: 15¢ per 1M input tokens, 60¢ per 1M output
+  - Fast response times suitable for bulk data processing
+  - Native JSON schema support for structured outputs (boolean, enum)
+  - Reliable and consistent results
+  - Simple API with straightforward error messages
+
+- **Gemini Flash** (alternative for AI() function):
+  - Free tier available for development/testing
+  - Faster for some tasks but less predictable
+  - More verbose responses require additional post-processing
+  - JSON schema support via `responseMimeType` and `responseSchema`
 
 ### Tool Design Patterns
 1. **Prefix consistency**: All related tools share a prefix (`highlights_add`, `highlights_clear`)
