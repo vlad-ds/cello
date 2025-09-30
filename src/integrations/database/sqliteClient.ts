@@ -153,4 +153,10 @@ export const sqliteDataClient: DataClient = {
       method: 'DELETE',
     });
   },
+
+  async clearFilters(sheetId: string): Promise<void> {
+    await request(`/sheets/${sheetId}/filters`, {
+      method: 'DELETE',
+    });
+  },
 };

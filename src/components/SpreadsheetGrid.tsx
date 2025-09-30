@@ -23,6 +23,7 @@ interface SpreadsheetGridProps {
   getColumnWidth: (colIndex: number) => number;
   getRowHeight: (rowIndex: number) => number;
   highlights?: CellHighlight[];
+  displayRowNumbers?: number[];
 }
 
 export const SpreadsheetGrid = ({
@@ -43,6 +44,7 @@ export const SpreadsheetGrid = ({
   getColumnWidth,
   getRowHeight,
   highlights = [],
+  displayRowNumbers,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSelectingColumns, setIsSelectingColumns] = useState(false);
@@ -499,7 +501,7 @@ export const SpreadsheetGrid = ({
                 onMouseEnter={() => handleRowHeaderMouseEnter(rowIndex)}
                 onClick={() => handleRowHeaderClick(rowIndex)}
               >
-                {rowIndex + 1}
+                {displayRowNumbers ? displayRowNumbers[rowIndex] + 1 : rowIndex + 1}
                 {rowIndex === ROWS - 1 && (
                   <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                     <button
@@ -522,10 +524,12 @@ export const SpreadsheetGrid = ({
             </div>
             
             {/* Data Cells */}
-            {Array.from({ length: COLS }, (_, colIndex) => (
+            {Array.from({ length: COLS }, (_, colIndex) => {
+              const actualRow = displayRowNumbers ? displayRowNumbers[rowIndex] : rowIndex;
+              return (
               <Cell
                 key={`${rowIndex}-${colIndex}`}
-                value={sheet.cells[`${rowIndex}-${colIndex}`] || ""}
+                value={sheet.cells[`${actualRow}-${colIndex}`] || ""}
                 isHeader={false}
                 isSelected={isCellSelected(rowIndex, colIndex)}
                 isEditing={editingCell?.row === rowIndex && editingCell?.col === colIndex}
@@ -538,10 +542,11 @@ export const SpreadsheetGrid = ({
                 onSelectionChange={onSelectionChange}
                 selection={selection}
                 ROWS={ROWS}
-                isHighlighted={!!getCellHighlightColor(rowIndex, colIndex)}
-                highlightColor={getCellHighlightColor(rowIndex, colIndex) || undefined}
+                isHighlighted={!!getCellHighlightColor(actualRow, colIndex)}
+                highlightColor={getCellHighlightColor(actualRow, colIndex) || undefined}
               />
-            ))}
+            );
+            })}
           </div>
         ))}
       </div>

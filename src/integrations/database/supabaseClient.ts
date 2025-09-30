@@ -139,4 +139,8 @@ export const supabaseDataClient: DataClient = {
   async deleteColumn(_sheetId: string, _columnIndex: number): Promise<void> {
     throw new Error('Removing columns is currently supported only when using the local SQLite backend.');
   },
+
+  async clearFilters(_sheetId: string): Promise<void> {
+    throw new Error('Filters are currently supported only when using the local SQLite backend.');
+  },
 };

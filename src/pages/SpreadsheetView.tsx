@@ -13,6 +13,7 @@ import {
   type ToolCall,
   type SheetTableData,
   type CellHighlight,
+  type FilterCondition,
 } from "@/integrations/database";
 import { useSpreadsheetSync } from "@/hooks/useSpreadsheetSync";
 import { CellData, SheetData, CellSelection, Action } from "./Index";
@@ -41,8 +42,21 @@ const SpreadsheetView = () => {
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(true);
   const [activeHighlights, setActiveHighlights] = useState<CellHighlight[]>([]);
+  const [activeFilters, setActiveFilters] = useState<{ sheetId: string; filters: FilterCondition[] }[]>([]);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
+
+  // Calculate effective row count: when filters are active, only render rows with data
+  const effectiveRowCount = activeSheet?.hasActiveFilters
+    ? (() => {
+        const rowsWithData = new Set<number>();
+        Object.keys(activeSheet.cells).forEach(key => {
+          const row = parseInt(key.split('-')[0]);
+          if (!isNaN(row)) rowsWithData.add(row);
+        });
+        return rowsWithData.size;
+      })()
+    : rowCount;
 
   useEffect(() => {
     if (spreadsheetId) {
@@ -78,14 +92,24 @@ const SpreadsheetView = () => {
             sheetData = await loadSheetData(sheet.id); // Try loading again
           }
           
-          const { cells, columnHeaders } = transformTableDataToSheetState(sheetData);
+          const { cells, columnHeaders, hasActiveFilters, displayRowNumbers } = transformTableDataToSheetState(sheetData);
 
           loadedSheets.push({
             id: sheet.id,
             name: sheet.name,
             cells,
-            columnHeaders
+            columnHeaders,
+            hasActiveFilters,
+            displayRowNumbers
           });
+
+          // Track filters from server
+          if (sheetData?.filters && sheetData.filters.length > 0) {
+            setActiveFilters(prev => {
+              const without = prev.filter(item => item.sheetId !== sheet.id);
+              return [...without, { sheetId: sheet.id, filters: sheetData.filters }];
+            });
+          }
           
         } catch (error) {
           console.error(`Error loading data for sheet ${sheet.id}:`, error);
@@ -127,19 +151,44 @@ const SpreadsheetView = () => {
   // Generate data from activeSheet.cells for the grid
   const generateGridData = (): CellData[][] => {
     if (!activeSheet) return [];
-    
+
     const gridData: CellData[][] = [];
-    
-    for (let row = 0; row < rowCount; row++) {
-      gridData[row] = [];
-      for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
-        const cellKey = `${row}-${col}`;
-        gridData[row][col] = {
-          value: activeSheet.cells[cellKey] || ""
-        };
+
+    if (activeSheet.hasActiveFilters) {
+      // When filters are active, only show rows that have data (already sequential from transform)
+      const rowsWithData = new Set<number>();
+      Object.keys(activeSheet.cells).forEach(key => {
+        const row = parseInt(key.split('-')[0]);
+        if (!isNaN(row)) {
+          rowsWithData.add(row);
+        }
+      });
+
+      const sortedRows = Array.from(rowsWithData).sort((a, b) => a - b);
+
+      sortedRows.forEach(row => {
+        const rowData: CellData[] = [];
+        for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
+          const cellKey = `${row}-${col}`;
+          rowData[col] = {
+            value: activeSheet.cells[cellKey] || ""
+          };
+        }
+        gridData.push(rowData);
+      });
+    } else {
+      // No filters: show all rows up to rowCount
+      for (let row = 0; row < rowCount; row++) {
+        gridData[row] = [];
+        for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
+          const cellKey = `${row}-${col}`;
+          gridData[row][col] = {
+            value: activeSheet.cells[cellKey] || ""
+          };
+        }
       }
     }
-    
+
     return gridData;
   };
 
@@ -508,6 +557,7 @@ const SpreadsheetView = () => {
   const transformTableDataToSheetState = (tableData: SheetTableData | null | undefined) => {
     const cells: { [key: string]: string } = {};
     const columnHeaders: string[] = [];
+    const hasActiveFilters = tableData?.filters && tableData.filters.length > 0;
 
     if (tableData?.data && tableData.data.length > 0) {
       const columnNames = Object.keys(tableData.data[0] ?? {})
@@ -546,7 +596,12 @@ const SpreadsheetView = () => {
       columnHeaders.push('COLUMN_1', 'COLUMN_2', 'COLUMN_3', 'COLUMN_4', 'COLUMN_5');
     }
 
-    return { cells, columnHeaders };
+    // When filters are active, extract the actual row numbers for display
+    const displayRowNumbers = hasActiveFilters
+      ? Array.from(new Set(Object.keys(cells).map(key => parseInt(key.split('-')[0])))).sort((a, b) => a - b)
+      : undefined;
+
+    return { cells, columnHeaders, hasActiveFilters, displayRowNumbers };
   };
 
   const refreshActiveSheetFromServer = async () => {
@@ -554,7 +609,7 @@ const SpreadsheetView = () => {
 
     try {
       const tableData = await loadSheetData(activeSheet.id);
-      const { cells, columnHeaders } = transformTableDataToSheetState(tableData);
+      const { cells, columnHeaders, hasActiveFilters, displayRowNumbers } = transformTableDataToSheetState(tableData);
 
       setSheets(prevSheets =>
         prevSheets.map(sheet =>
@@ -563,10 +618,23 @@ const SpreadsheetView = () => {
                 ...sheet,
                 cells,
                 columnHeaders,
+                hasActiveFilters,
+                displayRowNumbers,
               }
             : sheet
         )
       );
+
+      // Sync filter state from server
+      if (tableData?.filters && tableData.filters.length > 0) {
+        setActiveFilters(prev => {
+          const without = prev.filter(item => item.sheetId !== activeSheet.id);
+          return [...without, { sheetId: activeSheet.id, filters: tableData.filters }];
+        });
+      } else {
+        // No filters - remove from state
+        setActiveFilters(prev => prev.filter(item => item.sheetId !== activeSheet.id));
+      }
     } catch (error) {
       console.error('Failed to refresh sheet after assistant update', error);
     }
@@ -601,6 +669,67 @@ const SpreadsheetView = () => {
       // If clear was called, replace all highlights; otherwise append
       setActiveHighlights(hasClear ? newHighlights : prev => [...prev, ...newHighlights]);
     }
+
+    // Handle filter clear
+    const hasFilterClear = toolCalls.some(call => call?.kind === 'filter_clear' && call.status === 'ok');
+
+    // Handle filters - collect all filter_add calls
+    const filterCalls = toolCalls.filter(call => call?.kind === 'filter' && call.status === 'ok');
+    if (hasFilterClear || filterCalls.length > 0) {
+      // Group filters by sheet
+      const filtersBySheet = new Map<string, FilterCondition[]>();
+
+      filterCalls.forEach(call => {
+        if (call.sheetId && call.condition) {
+          const existing = filtersBySheet.get(call.sheetId) || [];
+          existing.push({ condition: call.condition });
+          filtersBySheet.set(call.sheetId, existing);
+        }
+      });
+
+      // Convert to array format
+      const newFilters = Array.from(filtersBySheet.entries()).map(([sheetId, filters]) => ({
+        sheetId,
+        filters,
+      }));
+
+      // If filter_clear was called, replace all filters for affected sheets
+      if (hasFilterClear) {
+        const clearedSheetIds = new Set(
+          toolCalls
+            .filter(call => call?.kind === 'filter_clear' && call.status === 'ok')
+            .map(call => call.sheetId)
+            .filter(Boolean) as string[]
+        );
+
+        setActiveFilters(prev => {
+          // Remove filters for cleared sheets
+          const remaining = prev.filter(item => !clearedSheetIds.has(item.sheetId));
+          // Add new filters
+          return [...remaining, ...newFilters];
+        });
+      } else if (newFilters.length > 0) {
+        // Append new filters
+        setActiveFilters(prev => {
+          const updated = [...prev];
+          newFilters.forEach(newItem => {
+            const existingIndex = updated.findIndex(item => item.sheetId === newItem.sheetId);
+            if (existingIndex >= 0) {
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                filters: [...updated[existingIndex].filters, ...newItem.filters],
+              };
+            } else {
+              updated.push(newItem);
+            }
+          });
+          return updated;
+        });
+      }
+
+      // Refresh the sheet to apply filters
+      refreshActiveSheetFromServer();
+    }
   };
 
   const handleChatCommand = (command: string) => {
@@ -609,6 +738,25 @@ const SpreadsheetView = () => {
 
   const clearHighlights = () => {
     setActiveHighlights([]);
+  };
+
+  const clearFilters = async (sheetId?: string) => {
+    if (sheetId) {
+      // Clear filters on backend
+      try {
+        await dataClient.clearFilters(sheetId);
+      } catch (error) {
+        console.error('Failed to clear filters on backend:', error);
+      }
+
+      // Clear from local state
+      setActiveFilters(prev => prev.filter(item => item.sheetId !== sheetId));
+
+      // Refresh the sheet to show unfiltered data
+      refreshActiveSheetFromServer();
+    } else {
+      setActiveFilters([]);
+    }
   };
 
   const updateColumnWidth = (colIndex: number, width: number) => {
@@ -761,7 +909,8 @@ const SpreadsheetView = () => {
                 onRemoveColumn={removeColumn}
                 onAddRow={addNewRow}
                 onClearSelectedCells={clearSelectedCells}
-                rowCount={rowCount}
+                rowCount={effectiveRowCount}
+                displayRowNumbers={activeSheet.displayRowNumbers}
                 columnWidths={columnWidths}
                 rowHeights={rowHeights}
                 onColumnResize={updateColumnWidth}
@@ -796,6 +945,8 @@ const SpreadsheetView = () => {
             onAssistantToolCalls={handleAssistantToolCalls}
             highlights={activeHighlights}
             onClearHighlights={clearHighlights}
+            filters={activeFilters.find(item => item.sheetId === activeSheet?.id)?.filters || []}
+            onClearFilters={() => activeSheet && clearFilters(activeSheet.id)}
           />
         </div>
       </div>

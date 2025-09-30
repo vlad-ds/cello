@@ -18,8 +18,13 @@ export interface SheetTableRow {
   [key: string]: string | number | null | undefined;
 }
 
+export interface FilterCondition {
+  condition: string;
+}
+
 export interface SheetTableData {
   data: SheetTableRow[];
+  filters?: FilterCondition[];
 }
 
 export interface ToolCallRecord {
@@ -33,7 +38,7 @@ export interface ToolCallRecord {
   truncated?: boolean;
   columns?: string[];
   error?: string;
-  kind?: 'read' | 'write' | 'highlight';
+  kind?: 'read' | 'write' | 'highlight' | 'highlight_clear' | 'filter' | 'filter_clear';
   operation?: 'select' | 'update' | 'insert' | 'alter';
   changes?: number;
   lastInsertRowid?: number | string;
@@ -47,6 +52,9 @@ export interface ToolCallRecord {
   values?: (string | number | boolean | null)[];
   color?: string;
   message?: string | null;
+  condition?: string;
+  clearedCount?: number;
+  totalFilters?: number;
 }
 
 export interface ChatMessage {
@@ -86,4 +94,5 @@ export interface DataClient {
   ): Promise<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }>;
   clearChat(spreadsheetId: string): Promise<void>;
   deleteColumn(sheetId: string, columnIndex: number): Promise<void>;
+  clearFilters(sheetId: string): Promise<void>;
 }

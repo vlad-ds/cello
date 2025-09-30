@@ -6,7 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { supabase } from "@/integrations/supabase/client";
 import { backendConfig } from "@/config/backend";
-import { dataClient, isSupabaseBackend, type CellHighlight } from "@/integrations/database";
+import { dataClient, isSupabaseBackend, type CellHighlight, type FilterCondition } from "@/integrations/database";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { toast } from "@/components/ui/sonner";
@@ -56,6 +56,8 @@ interface ChatPanelProps {
   spreadsheetId?: string;
   highlights?: CellHighlight[];
   onClearHighlights?: () => void;
+  filters?: FilterCondition[];
+  onClearFilters?: () => void;
 }
 
 const getRangeValue = (selectedCells?: { [key: string]: string }) => {
@@ -97,7 +99,7 @@ const welcomeMessage: Message = {
   toolCalls: null,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, highlights = [], onClearHighlights }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, highlights = [], onClearHighlights, filters = [], onClearFilters }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -389,6 +391,35 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             size="icon"
             className="h-6 w-6 flex-shrink-0"
             onClick={onClearHighlights}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
+
+      {/* Active Filters Banner */}
+      {filters.length > 0 && (
+        <div className="p-3 border-b border-border bg-blue-50/50 dark:bg-blue-950/20 flex items-start gap-3">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <Database className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+              <span className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                {filters.length} active filter{filters.length > 1 ? 's' : ''}
+              </span>
+            </div>
+            <div className="space-y-1">
+              {filters.map((filter, idx) => (
+                <div key={idx} className="text-xs text-blue-700 dark:text-blue-300 font-mono bg-blue-100/50 dark:bg-blue-900/30 px-2 py-1 rounded">
+                  {filter.condition}
+                </div>
+              ))}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 flex-shrink-0"
+            onClick={onClearFilters}
           >
             <X className="h-4 w-4" />
           </Button>

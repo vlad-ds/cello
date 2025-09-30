@@ -93,6 +93,11 @@ const AI_PROVIDER = process.env.AI_PROVIDER || 'anthropic'; // 'gemini' or 'anth
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
+// In-memory storage for active filters (per sheet)
+// Structure: { [sheetId]: [{ condition: string }] }
+// Each condition is a SQL boolean expression defining which rows to SHOW
+const activeFilters = new Map();
+
 const now = () => new Date().toISOString();
 const defaultHeader = (index) => `COLUMN_${index + 1}`;
 const defaultSqlName = (index) => `column_${index + 1}`;
@@ -652,13 +657,22 @@ const loadSheetTable = (sheetId) => {
   const columns = getSheetColumns(sheetId);
 
   if (columns.length === 0) {
-    return { data: [] };
+    return { data: [], filters: [] };
   }
 
   const selectColumns = columns.map((column) => `"${column.sql_name}" AS "${column.sql_name}"`).join(', ');
+
+  // Apply active filters (conditions define which rows to SHOW)
+  const filters = activeFilters.get(sheetId) || [];
+  let whereClause = '';
+  if (filters.length > 0) {
+    const conditions = filters.map((filter) => `(${filter.condition})`);
+    whereClause = ` WHERE ${conditions.join(' AND ')}`;
+  }
+
   const rows = db
     .prepare(
-      `SELECT row_number${selectColumns ? `, ${selectColumns}` : ''} FROM "${tableName}" ORDER BY row_number`
+      `SELECT row_number${selectColumns ? `, ${selectColumns}` : ''} FROM "${tableName}"${whereClause} ORDER BY row_number`
     )
     .all();
 
@@ -675,7 +689,10 @@ const loadSheetTable = (sheetId) => {
     return record;
   });
 
-  return { data: columns.length > 0 ? [headerRow, ...dataRows] : [] };
+  return {
+    data: columns.length > 0 ? [headerRow, ...dataRows] : [],
+    filters: filters
+  };
 };
 
 const removeColumn = (sheetId, columnIndex) => {
@@ -896,13 +913,16 @@ const handleAnthropicChat = async (req, res, context) => {
 
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
-    'You have access to four tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
+    'You have access to six tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), and filter_clear (to remove filters).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(column: "grade", values: [28], color: "green") then highlights_add(column: "grade", values: [4], color: "red").',
     'For data-based highlighting: Query with executeSheetSql to get the values, then use highlights_add with column/values. Example: To highlight highest and lowest grades in different colors, SELECT the values, then call highlights_add twice with different colors.',
     'Use `highlights_clear` to remove all active highlights from the spreadsheet.',
+    'Use `filter_add` to show only rows that match a SQL boolean condition (other rows are hidden). Provide a WHERE clause expression. Filters persist and can be layered (multiple filters create AND conditions). Examples: filter_add(sheet: context.spreadsheet.sheets["Sales"], condition: \'"revenue" > 1000\'), or filter_add(condition: \'"status" = \\\'active\\\' AND "revenue" > 5000\').',
+    'Use `filter_clear` to remove all active filters from a sheet and show all rows again.',
+    'Use `filters_get` to check what filters are currently active on a sheet. Returns the list of active filter conditions. Use this to verify filter state before adding or removing filters.',
     'If a tool call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
     'When calling a tool, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
     'Each sheet table contains a `row_number` column that corresponds to the spreadsheet row number. Always SELECT row_number when you need to highlight cells based on query results. Summarize tool results for the user instead of pasting large tables verbatim.',
@@ -1038,6 +1058,62 @@ const handleAnthropicChat = async (req, res, context) => {
         required: [],
       },
     },
+    {
+      name: 'filter_add',
+      description:
+        'Show only rows matching a SQL boolean condition (other rows are hidden). Provide a WHERE clause expression that defines which rows to SHOW. Filters persist until cleared and multiple filters create AND conditions. Use this when the user wants to focus on specific data.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+          condition: {
+            type: 'string',
+            description:
+              'SQL boolean expression defining which rows to SHOW. Use double quotes for column names. Examples: \'"revenue" > 1000\', \'"status" = \\\'active\\\'\', \'"grade" BETWEEN 80 AND 100\', \'LOWER("name") LIKE \\\'%smith%\\\'\'.',
+          },
+        },
+        required: ['sheet', 'condition'],
+      },
+    },
+    {
+      name: 'filter_clear',
+      description:
+        'Remove all active filters from the specified sheet to show all rows again.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+        },
+        required: ['sheet'],
+      },
+    },
+    {
+      name: 'filters_get',
+      description:
+        'Get the list of currently active filters on a sheet. Returns the filter conditions that are currently hiding rows.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+        },
+        required: ['sheet'],
+      },
+    },
   ];
 
   try {
@@ -1137,7 +1213,10 @@ const handleAnthropicChat = async (req, res, context) => {
         let toolCallRecord = null;
 
         try {
-          if (toolName !== 'highlights_add' && toolName !== 'highlights_clear' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
+          const isNonSqlTool = toolName === 'highlights_add' || toolName === 'highlights_clear' || toolName === 'filter_add' || toolName === 'filter_clear';
+          const isSqlTool = toolName === 'executeSheetSql' || toolName === 'mutateSheetSql';
+
+          if (isSqlTool && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
             throw new Error('Both sheet reference and sql are required for this tool call.');
           }
 
@@ -1261,6 +1340,96 @@ const handleAnthropicChat = async (req, res, context) => {
               kind: 'highlight_clear',
               status: 'ok',
             };
+          } else if (toolName === 'filter_add') {
+            if (!sheetMeta || !sheetMeta.id) {
+              throw new Error('Valid sheet reference is required for filter_add.');
+            }
+
+            const condition = toolInput.condition;
+
+            if (!condition || typeof condition !== 'string' || !condition.trim()) {
+              throw new Error('A SQL boolean condition is required for filter_add.');
+            }
+
+            // Validate the condition by attempting a test query
+            const tableName = tableNameForSheet(sheetMeta.id);
+            const testSql = `SELECT 1 FROM "${tableName}" WHERE ${condition} LIMIT 1`;
+            try {
+              readOnlyDb.prepare(testSql).get();
+            } catch (sqlError) {
+              throw new Error(`Invalid filter condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
+            }
+
+            // Add filter to active filters
+            const currentFilters = activeFilters.get(sheetMeta.id) || [];
+            currentFilters.push({ condition: condition.trim() });
+            activeFilters.set(sheetMeta.id, currentFilters);
+
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              condition: condition.trim(),
+              totalFilters: currentFilters.length,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'filter',
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              condition: condition.trim(),
+              status: 'ok',
+              reference: sheetReferenceLabel,
+            };
+          } else if (toolName === 'filter_clear') {
+            if (!sheetMeta || !sheetMeta.id) {
+              throw new Error('Valid sheet reference is required for filter_clear.');
+            }
+
+            const previousCount = (activeFilters.get(sheetMeta.id) || []).length;
+            activeFilters.delete(sheetMeta.id);
+
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              clearedCount: previousCount,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'filter_clear',
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              status: 'ok',
+              clearedCount: previousCount,
+              reference: sheetReferenceLabel,
+            };
+          } else if (toolName === 'filters_get') {
+            if (!sheetMeta || !sheetMeta.id) {
+              throw new Error('Valid sheet reference is required for filters_get.');
+            }
+
+            const currentFilters = activeFilters.get(sheetMeta.id) || [];
+
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              filters: currentFilters,
+              filterCount: currentFilters.length,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'filters_get',
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              status: 'ok',
+              filterCount: currentFilters.length,
+              reference: sheetReferenceLabel,
+            };
           } else {
             throw new Error(`Unsupported tool: ${toolName}`);
           }
@@ -1281,23 +1450,34 @@ const handleAnthropicChat = async (req, res, context) => {
           const isMutation = toolName === 'mutateSheetSql';
           const isHighlight = toolName === 'highlights_add';
           const isHighlightClear = toolName === 'highlights_clear';
+          const isFilter = toolName === 'filter_add';
+          const isFilterClear = toolName === 'filter_clear';
+          const isNonSqlTool = isHighlight || isHighlightClear || isFilter || isFilterClear;
 
           toolResultContent = JSON.stringify({
             ok: false,
             sheetId: sheetMeta?.id,
             sheetName: sheetMeta?.name,
-            error: toolError instanceof Error ? toolError.message : (isHighlight || isHighlightClear ? 'Highlight operation failed.' : 'SQL execution failed.'),
+            error: toolError instanceof Error ? toolError.message : (isNonSqlTool ? 'Operation failed.' : 'SQL execution failed.'),
           });
+
+          let kind = 'read';
+          if (isHighlightClear) kind = 'highlight_clear';
+          else if (isHighlight) kind = 'highlight';
+          else if (isFilterClear) kind = 'filter_clear';
+          else if (isFilter) kind = 'filter';
+          else if (isMutation) kind = 'write';
 
           toolCallRecord = {
             name: toolName,
-            kind: isHighlightClear ? 'highlight_clear' : (isHighlight ? 'highlight' : (isMutation ? 'write' : 'read')),
+            kind,
             sheetId: sheetMeta?.id,
             sheetName: sheetMeta?.name,
-            sql: (isHighlight || isHighlightClear) ? undefined : trimmedSql,
+            sql: isNonSqlTool ? undefined : trimmedSql,
             range: isHighlight ? toolInput.range : undefined,
+            condition: isFilter ? toolInput.condition : undefined,
             status: 'error',
-            operation: (isHighlight || isHighlightClear) ? undefined : (isMutation ? undefined : 'select'),
+            operation: isNonSqlTool ? undefined : (isMutation ? undefined : 'select'),
             error: toolError instanceof Error ? toolError.message : String(toolError),
             reference: sheetReferenceLabel,
           };
@@ -2046,6 +2226,16 @@ app.delete('/spreadsheets/:id/chat', (req, res) => {
   }
 
   clearConversation(req.params.id);
+  res.status(204).end();
+});
+
+app.delete('/sheets/:id/filters', (req, res) => {
+  const sheet = db.prepare('SELECT id FROM sheets WHERE id = ?').get(req.params.id);
+  if (!sheet) {
+    return res.status(404).json({ error: 'Sheet not found.' });
+  }
+
+  activeFilters.delete(req.params.id);
   res.status(204).end();
 });
 

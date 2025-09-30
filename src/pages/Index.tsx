@@ -15,6 +15,8 @@ export interface SheetData {
   name: string;
   cells: CellData;
   columnHeaders: string[];
+  hasActiveFilters?: boolean;
+  displayRowNumbers?: number[]; // Actual row numbers to display when filters are active
 }
 
 export interface CellSelection {
