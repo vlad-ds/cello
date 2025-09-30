@@ -89,7 +89,9 @@ app.use(cors());
 app.use(express.json({ limit: '512kb' }));
 
 const PORT = Number(process.env.PORT || 4000);
+const AI_PROVIDER = process.env.AI_PROVIDER || 'anthropic'; // 'gemini' or 'anthropic'
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 const now = () => new Date().toISOString();
 const defaultHeader = (index) => `COLUMN_${index + 1}`;
@@ -888,8 +890,481 @@ app.delete('/sheets/:id/columns/:index', (req, res) => {
   }
 });
 
+// Anthropic Chat Handler
+const handleAnthropicChat = async (req, res, context) => {
+  const { trimmedQuery, selectedCells, userMessage, sheetMetas, sheetSummary, sheetReferenceList } = context;
+
+  const systemInstructionText = [
+    'You are an assistant helping users work with spreadsheet data.',
+    'You have access to four tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
+    'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
+    'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
+    'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
+    'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(column: "grade", values: [28], color: "green") then highlights_add(column: "grade", values: [4], color: "red").',
+    'For data-based highlighting: Query with executeSheetSql to get the values, then use highlights_add with column/values. Example: To highlight highest and lowest grades in different colors, SELECT the values, then call highlights_add twice with different colors.',
+    'Use `highlights_clear` to remove all active highlights from the spreadsheet.',
+    'If a tool call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
+    'When calling a tool, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
+    'Each sheet table contains a `row_number` column that corresponds to the spreadsheet row number. Always SELECT row_number when you need to highlight cells based on query results. Summarize tool results for the user instead of pasting large tables verbatim.',
+  ].join('\n\n');
+
+  // Build messages array from chat history
+  const messages = listChatMessages(req.params.id).map((message) => {
+    let text = message.content;
+
+    if (message.id === userMessage.id) {
+      const contextEntries =
+        selectedCells && typeof selectedCells === 'object'
+          ? Object.entries(selectedCells)
+          : [];
+      if (contextEntries.length > 0) {
+        const cellText = contextEntries.map(([key, value]) => `${key}: ${value}`).join('\n');
+        text = `${text}\n\nSelected cell context:\n${cellText}`;
+      }
+
+      if (sheetSummary) {
+        text = `${text}\n\nAvailable sheets and SQL columns:\n${sheetSummary}`;
+      }
+    }
+
+    return {
+      role: message.role, // 'user' or 'assistant'
+      content: text,
+    };
+  });
+
+  // Define tools in Anthropic format
+  const tools = [
+    {
+      name: 'executeSheetSql',
+      description: 'Run a read-only SQL query against the specified sheet table and return the result rows.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+          sql: {
+            type: 'string',
+            description:
+              'A single SELECT SQL statement targeting the sheet table. Use the sheet reference directly in the FROM clause.',
+          },
+        },
+        required: ['sheet', 'sql'],
+      },
+    },
+    {
+      name: 'mutateSheetSql',
+      description:
+        'Modify spreadsheet data by running an UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statement against the specified sheet table.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+          sql: {
+            type: 'string',
+            description:
+              'A single UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statement. Use the sheet reference directly.',
+          },
+        },
+        required: ['sheet', 'sql'],
+      },
+    },
+    {
+      name: 'highlights_add',
+      description:
+        'Draw visual attention to specific cells or ranges by applying a colored overlay. Use this to help the user see results of an analysis or locate important data. Multiple highlights can be layered.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          sheet: {
+            type: 'string',
+            description: sheetReferenceList
+              ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+              : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+          },
+          range: {
+            type: 'string',
+            description:
+              'Cell range to highlight in A1 notation (e.g., "A1", "B2:D5", "A1:A10"). Use this for specific cell locations. Mutually exclusive with column/values.',
+          },
+          column: {
+            type: 'string',
+            description:
+              'Column name (SQL column name like "grade") to search for matching values. Use with "values" parameter. Mutually exclusive with range.',
+          },
+          values: {
+            type: 'array',
+            items: {
+              oneOf: [
+                { type: 'string' },
+                { type: 'number' },
+                { type: 'boolean' },
+                { type: 'null' }
+              ]
+            },
+            description:
+              'Array of values to highlight in the specified column. All cells in the column matching these values will be highlighted. Use with "column" parameter.',
+          },
+          color: {
+            type: 'string',
+            enum: ['yellow', 'red', 'green', 'blue', 'orange', 'purple'],
+            description: 'Highlight color (defaults to yellow if not specified).',
+          },
+          message: {
+            type: 'string',
+            description:
+              'Optional message explaining why these cells are highlighted (shown to user).',
+          },
+        },
+        required: ['sheet'],
+      },
+    },
+    {
+      name: 'highlights_clear',
+      description:
+        'Clear all active highlights from the spreadsheet.',
+      input_schema: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  ];
+
+  try {
+    let conversation = [...messages];
+    const toolCalls = [];
+    let assistantText = '';
+    const maxIterations = 10;
+    let iteration = 0;
+
+    while (iteration < maxIterations) {
+      iteration += 1;
+
+      const payload = {
+        model: 'claude-sonnet-4-5',
+        max_tokens: 4096,
+        system: systemInstructionText,
+        messages: conversation,
+        tools,
+      };
+
+      logToFile('anthropic-request', {
+        iteration,
+        spreadsheetId: req.params.id,
+        userQuery: trimmedQuery,
+        payload,
+      });
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null);
+        const message = errorBody?.error?.message || 'Anthropic API request failed.';
+        logToFile('anthropic-error', { iteration, error: message, errorBody });
+        return res.status(response.status).json({ error: message });
+      }
+
+      const data = await response.json();
+      logToFile('anthropic-response', {
+        iteration,
+        spreadsheetId: req.params.id,
+        response: data,
+      });
+
+      const stopReason = data.stop_reason;
+      const content = data.content || [];
+
+      // Extract text and tool uses
+      const textBlocks = content.filter((block) => block.type === 'text');
+      const toolUseBlocks = content.filter((block) => block.type === 'tool_use');
+
+      if (textBlocks.length > 0) {
+        assistantText = textBlocks.map((block) => block.text).join('\n');
+      }
+
+      // If no tool use, we're done
+      if (toolUseBlocks.length === 0) {
+        break;
+      }
+
+      // Add assistant's message to conversation (with tool use)
+      conversation.push({
+        role: 'assistant',
+        content: data.content,
+      });
+
+      // Process each tool use
+      const toolResults = [];
+      for (const toolUse of toolUseBlocks) {
+        const toolName = toolUse.name;
+        const toolInput = toolUse.input || {};
+        const toolUseId = toolUse.id;
+
+        logToFile('anthropic-tool-call', {
+          iteration,
+          toolName,
+          toolInput,
+          toolUseId,
+        });
+
+        const sheetArg = toolInput.sheet;
+        const sql = toolInput.sql || '';
+        const trimmedSql = typeof sql === 'string' ? sql : '';
+        const resolvedSheet = resolveSheetReference(sheetMetas, sheetArg);
+        const sheetId = resolvedSheet?.sheet?.id || toolInput.sheetId;
+        const sheetMeta = sheetMetas.find((sheet) => sheet.id === sheetId) || resolvedSheet?.sheet;
+        const sheetReferenceLabel = resolvedSheet?.reference ?? sheetArg ?? sheetId;
+
+        let toolResultContent = null;
+        let toolCallRecord = null;
+
+        try {
+          if (toolName !== 'highlights_add' && toolName !== 'highlights_clear' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
+            throw new Error('Both sheet reference and sql are required for this tool call.');
+          }
+
+          const targetSheetId = sheetMeta?.id;
+
+          if (toolName === 'mutateSheetSql') {
+            const execution = executeSheetSqlMutation(req.params.id, targetSheetId, trimmedSql);
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: targetSheetId,
+              sheetName: execution.sheet?.name,
+              operation: execution.operation,
+              changes: execution.changes,
+              lastInsertRowid: execution.lastInsertRowid,
+              addedColumns: execution.addedColumns,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'write',
+              sheetId: targetSheetId,
+              sheetName: execution.sheet?.name,
+              sql: trimmedSql,
+              status: 'ok',
+              operation: execution.operation,
+              changes: execution.changes,
+              lastInsertRowid: execution.lastInsertRowid,
+              addedColumns: execution.addedColumns,
+              reference: sheetReferenceLabel,
+            };
+
+            if (execution.addedColumns?.length && sheetMeta) {
+              sheetMeta.columns = [
+                ...(sheetMeta.columns ?? []),
+                ...execution.addedColumns.map((column) => ({
+                  header: column.header,
+                  sql_name: column.sqlName,
+                  column_index: column.columnIndex,
+                })),
+              ];
+            }
+          } else if (toolName === 'executeSheetSql') {
+            const execution = executeSheetSql(req.params.id, targetSheetId, trimmedSql);
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: targetSheetId,
+              sheetName: execution.sheet?.name,
+              rowCount: execution.rowCount,
+              truncated: execution.truncated,
+              columns: execution.columns,
+              rows: execution.rows,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'read',
+              sheetId: targetSheetId,
+              sheetName: execution.sheet?.name,
+              sql: trimmedSql,
+              status: 'ok',
+              operation: 'select',
+              rowCount: execution.rowCount,
+              truncated: execution.truncated,
+              columns: execution.columns,
+              reference: sheetReferenceLabel,
+            };
+          } else if (toolName === 'highlights_add') {
+            if (!sheetMeta || !sheetMeta.id) {
+              throw new Error('Valid sheet reference is required for highlights_add.');
+            }
+
+            const range = toolInput.range;
+            const column = toolInput.column;
+            const values = toolInput.values;
+
+            if (!range && !(column && values)) {
+              throw new Error('Either "range" or "column" + "values" is required for highlights_add.');
+            }
+            if (range && (column || values)) {
+              throw new Error('Cannot specify both "range" and "column/values".');
+            }
+
+            const color = toolInput.color || 'yellow';
+            const message = toolInput.message || null;
+
+            const validColors = ['yellow', 'red', 'green', 'blue', 'orange', 'purple'];
+            const finalColor = validColors.includes(color.toLowerCase()) ? color.toLowerCase() : 'yellow';
+
+            toolResultContent = JSON.stringify({
+              ok: true,
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              range: range ? range.trim() : undefined,
+              column: column || undefined,
+              values: values || undefined,
+              color: finalColor,
+              message: message,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'highlight',
+              sheetId: sheetMeta.id,
+              sheetName: sheetMeta.name,
+              range: range ? range.trim() : undefined,
+              column: column || undefined,
+              values: values || undefined,
+              color: finalColor,
+              message: message,
+              status: 'ok',
+              reference: sheetReferenceLabel,
+            };
+          } else if (toolName === 'highlights_clear') {
+            toolResultContent = JSON.stringify({
+              ok: true,
+              cleared: true,
+            });
+
+            toolCallRecord = {
+              name: toolName,
+              kind: 'highlight_clear',
+              status: 'ok',
+            };
+          } else {
+            throw new Error(`Unsupported tool: ${toolName}`);
+          }
+
+          logToFile('anthropic-tool-success', {
+            iteration,
+            toolName,
+            result: toolResultContent,
+          });
+        } catch (toolError) {
+          logToFile('anthropic-tool-error', {
+            iteration,
+            toolName,
+            error: toolError instanceof Error ? toolError.message : String(toolError),
+            stack: toolError instanceof Error ? toolError.stack : undefined,
+          });
+
+          const isMutation = toolName === 'mutateSheetSql';
+          const isHighlight = toolName === 'highlights_add';
+          const isHighlightClear = toolName === 'highlights_clear';
+
+          toolResultContent = JSON.stringify({
+            ok: false,
+            sheetId: sheetMeta?.id,
+            sheetName: sheetMeta?.name,
+            error: toolError instanceof Error ? toolError.message : (isHighlight || isHighlightClear ? 'Highlight operation failed.' : 'SQL execution failed.'),
+          });
+
+          toolCallRecord = {
+            name: toolName,
+            kind: isHighlightClear ? 'highlight_clear' : (isHighlight ? 'highlight' : (isMutation ? 'write' : 'read')),
+            sheetId: sheetMeta?.id,
+            sheetName: sheetMeta?.name,
+            sql: (isHighlight || isHighlightClear) ? undefined : trimmedSql,
+            range: isHighlight ? toolInput.range : undefined,
+            status: 'error',
+            operation: (isHighlight || isHighlightClear) ? undefined : (isMutation ? undefined : 'select'),
+            error: toolError instanceof Error ? toolError.message : String(toolError),
+            reference: sheetReferenceLabel,
+          };
+        }
+
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: toolResultContent,
+        });
+
+        if (toolCallRecord) {
+          toolCalls.push(toolCallRecord);
+        }
+      }
+
+      // Add tool results to conversation
+      conversation.push({
+        role: 'user',
+        content: toolResults,
+      });
+
+      // If stop reason is end_turn, we're done
+      if (stopReason === 'end_turn') {
+        break;
+      }
+    }
+
+    // Save assistant response
+    const assistantMessage = addChatMessage(
+      req.params.id,
+      'assistant',
+      assistantText || 'I processed your request.',
+      null,
+      toolCalls.length > 0 ? toolCalls : null
+    );
+
+    logToFile('anthropic-final', {
+      spreadsheetId: req.params.id,
+      userQuery: trimmedQuery,
+      assistantText,
+      toolCalls,
+      iterations: iteration,
+    });
+
+    const allMessages = listChatMessages(req.params.id);
+    res.json({
+      response: assistantMessage.content,
+      assistantMessage,
+      messages: allMessages,
+    });
+  } catch (error) {
+    logToFile('anthropic-error', {
+      spreadsheetId: req.params.id,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    res.status(500).json({ error: 'Failed to generate response.' });
+  }
+};
+
 app.post('/spreadsheets/:id/chat', async (req, res) => {
-  if (!GEMINI_API_KEY) {
+  // Check API key based on provider
+  if (AI_PROVIDER === 'anthropic' && !ANTHROPIC_API_KEY) {
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY is not configured on the server.' });
+  }
+  if (AI_PROVIDER === 'gemini' && !GEMINI_API_KEY) {
     return res.status(400).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
   }
 
@@ -916,13 +1391,27 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     )
     .join('; ');
 
+  // Route to appropriate AI provider
+  if (AI_PROVIDER === 'anthropic') {
+    return handleAnthropicChat(req, res, {
+      trimmedQuery,
+      selectedCells,
+      userMessage,
+      sheetMetas,
+      sheetSummary,
+      sheetReferenceList,
+    });
+  }
+
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
-    'You have access to three functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), and highlightCells (for visual emphasis).',
+    'You have access to four functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
-    'Use `highlightCells` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
-    'For data-based highlighting: Query with executeSheetSql to get the values, then use highlightCells with column/values. Example: To highlight highest and lowest grades, SELECT the top and bottom values, then call highlightCells with column: "grade" and values: [28, 4]. This is simpler than converting row_numbers to A1 notation and works for multiple scattered cells.',
+    'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
+    'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(column: "grade", values: [28], color: "green") then highlights_add(column: "grade", values: [4], color: "red").',
+    'For data-based highlighting: Query with executeSheetSql to get the values, then use highlights_add with column/values. Example: To highlight highest and lowest grades in different colors, SELECT the values, then call highlights_add twice with different colors.',
+    'Use `highlights_clear` to remove all active highlights from the spreadsheet.',
     'IMPORTANT: When passing function parameters, ensure all string values are properly escaped. Do not include unescaped quotes or special characters in function parameters. Keep parameter content concise to avoid exceeding token limits.',
     'If a function call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
     'When calling a function, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
@@ -1000,9 +1489,9 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
           },
         },
         {
-          name: 'highlightCells',
+          name: 'highlights_add',
           description:
-            'Draw visual attention to specific cells or ranges by applying a colored overlay. Use this to help the user see results of an analysis or locate important data.',
+            'Draw visual attention to specific cells or ranges by applying a colored overlay. Use this to help the user see results of an analysis or locate important data. Multiple highlights can be layered.',
           parameters: {
             type: 'object',
             properties: {
@@ -1042,6 +1531,16 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
             required: ['sheet'],
           },
         },
+        {
+          name: 'highlights_clear',
+          description:
+            'Clear all active highlights from the spreadsheet.',
+          parameters: {
+            type: 'object',
+            properties: {},
+            required: [],
+          },
+        },
       ],
     },
   ];
@@ -1051,9 +1550,6 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     topK: 32,
     topP: 0.95,
     maxOutputTokens: 1024,
-    thinkingConfig: {
-      thinkingBudget: 8192  // Increased thinking budget for better reasoning
-    }
   };
 
   const getTextFromParts = (parts) =>
@@ -1223,7 +1719,7 @@ const buildRequestPayload = (conversationContents) => ({
       let toolCallRecord = null;
 
       try {
-        if (callName !== 'highlightCells' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
+        if (callName !== 'highlights_add' && callName !== 'highlights_clear' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
           throw new Error('Both sheet reference and sql are required for this tool call.');
         }
 
@@ -1292,9 +1788,9 @@ const buildRequestPayload = (conversationContents) => ({
             columns: execution.columns,
             reference: sheetReferenceLabel,
           };
-        } else if (callName === 'highlightCells') {
+        } else if (callName === 'highlights_add') {
           if (!sheetMeta || !sheetMeta.id) {
-            throw new Error('Valid sheet reference is required for highlightCells.');
+            throw new Error('Valid sheet reference is required for highlights_add.');
           }
 
           const range = parsedArgs.range;
@@ -1303,7 +1799,7 @@ const buildRequestPayload = (conversationContents) => ({
 
           // Validate that either range OR (column + values) is provided
           if (!range && !(column && values)) {
-            throw new Error('Either "range" (e.g., "A1") or "column" + "values" (e.g., column: "grade", values: [28, 7]) is required for highlightCells.');
+            throw new Error('Either "range" (e.g., "A1") or "column" + "values" (e.g., column: "grade", values: [28, 7]) is required for highlights_add.');
           }
           if (range && (column || values)) {
             throw new Error('Cannot specify both "range" and "column/values" - use one approach only.');
@@ -1340,6 +1836,19 @@ const buildRequestPayload = (conversationContents) => ({
             status: 'ok',
             reference: sheetReferenceLabel,
           };
+        } else if (callName === 'highlights_clear') {
+          toolResultPayload = {
+            ok: true,
+            cleared: true,
+            sheetReference: sheetReferenceLabel,
+          };
+
+          toolCallRecord = {
+            name: callName,
+            kind: 'highlight_clear',
+            status: 'ok',
+            reference: sheetReferenceLabel,
+          };
         } else {
           throw new Error(`Unsupported function call: ${callName}`);
         }
@@ -1357,24 +1866,25 @@ const buildRequestPayload = (conversationContents) => ({
           stack: toolError instanceof Error ? toolError.stack : undefined
         });
         const isMutation = callName === 'mutateSheetSql';
-        const isHighlight = callName === 'highlightCells';
+        const isHighlight = callName === 'highlights_add';
+        const isHighlightClear = callName === 'highlights_clear';
         toolResultPayload = {
           ok: false,
           sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
           sheetReference: sheetReferenceLabel,
-          error: toolError instanceof Error ? toolError.message : (isHighlight ? 'Highlight failed.' : 'SQL execution failed.'),
+          error: toolError instanceof Error ? toolError.message : ((isHighlight || isHighlightClear) ? 'Highlight operation failed.' : 'SQL execution failed.'),
         };
 
         toolCallRecord = {
           name: callName,
-          kind: isHighlight ? 'highlight' : (isMutation ? 'write' : 'read'),
+          kind: isHighlightClear ? 'highlight_clear' : (isHighlight ? 'highlight' : (isMutation ? 'write' : 'read')),
           sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
-          sql: isHighlight ? undefined : trimmedSql,
+          sql: (isHighlight || isHighlightClear) ? undefined : trimmedSql,
           range: isHighlight ? parsedArgs.range : undefined,
           status: 'error',
-          operation: isHighlight ? undefined : (isMutation ? undefined : 'select'),
+          operation: (isHighlight || isHighlightClear) ? undefined : (isMutation ? undefined : 'select'),
           error: toolError instanceof Error ? toolError.message : String(toolError),
           reference: sheetReferenceLabel,
         };

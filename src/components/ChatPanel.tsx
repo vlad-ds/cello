@@ -33,7 +33,7 @@ interface ToolCall {
   truncated?: boolean;
   columns?: string[];
   error?: string;
-  kind?: "read" | "write" | "highlight";
+  kind?: "read" | "write" | "highlight" | "highlight_clear";
   operation?: "select" | "update" | "insert" | "alter";
   changes?: number;
   lastInsertRowid?: number | string;
@@ -54,8 +54,8 @@ interface ChatPanelProps {
   onAssistantToolCalls?: (toolCalls: ToolCall[] | null | undefined) => void;
   selectedCells?: { [key: string]: string };
   spreadsheetId?: string;
-  highlight?: CellHighlight | null;
-  onClearHighlight?: () => void;
+  highlights?: CellHighlight[];
+  onClearHighlights?: () => void;
 }
 
 const getRangeValue = (selectedCells?: { [key: string]: string }) => {
@@ -97,7 +97,7 @@ const welcomeMessage: Message = {
   toolCalls: null,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, highlight, onClearHighlight }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, highlights = [], onClearHighlights }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -355,33 +355,40 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         </div>
       </div>
 
-      {/* Active Highlight Banner */}
-      {highlight && (
+      {/* Active Highlights Banner */}
+      {highlights.length > 0 && (
         <div className="p-3 border-b border-border bg-muted/50 flex items-start gap-3">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
-              <div className={`w-3 h-3 rounded-sm ${
-                highlight.color === 'yellow' ? 'bg-yellow-400' :
-                highlight.color === 'red' ? 'bg-red-400' :
-                highlight.color === 'green' ? 'bg-green-400' :
-                highlight.color === 'blue' ? 'bg-blue-400' :
-                highlight.color === 'orange' ? 'bg-orange-400' :
-                highlight.color === 'purple' ? 'bg-purple-400' :
-                'bg-yellow-400'
-              }`} />
               <span className="text-sm font-medium">
-                Highlighting {highlight.range || `${highlight.column}: ${highlight.values?.join(', ')}`}
+                {highlights.length} active highlight{highlights.length > 1 ? 's' : ''}
               </span>
             </div>
-            {highlight.message && (
-              <p className="text-xs text-muted-foreground">{highlight.message}</p>
-            )}
+            <div className="space-y-1">
+              {highlights.map((highlight, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <div className={`w-3 h-3 rounded-sm flex-shrink-0 ${
+                    highlight.color === 'yellow' ? 'bg-yellow-400' :
+                    highlight.color === 'red' ? 'bg-red-400' :
+                    highlight.color === 'green' ? 'bg-green-400' :
+                    highlight.color === 'blue' ? 'bg-blue-400' :
+                    highlight.color === 'orange' ? 'bg-orange-400' :
+                    highlight.color === 'purple' ? 'bg-purple-400' :
+                    'bg-yellow-400'
+                  }`} />
+                  <span className="text-xs text-muted-foreground">
+                    {highlight.range || `${highlight.column}: ${highlight.values?.join(', ')}`}
+                    {highlight.message && ` - ${highlight.message}`}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
           <Button
             variant="ghost"
             size="icon"
             className="h-6 w-6 flex-shrink-0"
-            onClick={onClearHighlight}
+            onClick={onClearHighlights}
           >
             <X className="h-4 w-4" />
           </Button>
@@ -434,6 +441,29 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                     {message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0 && (
                       <div className="mt-3 space-y-3">
                         {message.toolCalls.map((toolCall, index) => {
+                          // Handle highlight clear tool calls
+                          if (toolCall.kind === 'highlight_clear') {
+                            return (
+                              <div
+                                key={`highlight-clear-${index}`}
+                                className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
+                              >
+                                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                                  <X className="h-4 w-4" />
+                                  <span>Cleared all highlights</span>
+                                  <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
+                                    {toolCall.status === 'error' ? 'Error' : 'Clear'}
+                                  </Badge>
+                                </div>
+                                {toolCall.error && (
+                                  <p className="mt-2 text-xs text-destructive">
+                                    {toolCall.error}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          }
+
                           // Handle highlight tool calls separately
                           if (toolCall.kind === 'highlight') {
                             return (

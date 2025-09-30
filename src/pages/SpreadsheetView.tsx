@@ -40,7 +40,7 @@ const SpreadsheetView = () => {
   const [history, setHistory] = useState<Action[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeHighlight, setActiveHighlight] = useState<CellHighlight | null>(null);
+  const [activeHighlights, setActiveHighlights] = useState<CellHighlight[]>([]);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
 
@@ -581,17 +581,28 @@ const SpreadsheetView = () => {
       refreshActiveSheetFromServer();
     }
 
-    // Handle cell highlights - set active highlight
-    const highlightCall = toolCalls.find(call => call?.kind === 'highlight' && call.status === 'ok');
-    if (highlightCall && highlightCall.sheetId && (highlightCall.range || (highlightCall.column && highlightCall.values))) {
-      setActiveHighlight({
-        sheetId: highlightCall.sheetId,
-        range: highlightCall.range,
-        column: highlightCall.column,
-        values: highlightCall.values,
-        color: highlightCall.color || 'yellow',
-        message: highlightCall.message || null,
-      });
+    // Handle highlight clear
+    const hasClear = toolCalls.some(call => call?.kind === 'highlight_clear' && call.status === 'ok');
+    if (hasClear) {
+      setActiveHighlights([]);
+      return;
+    }
+
+    // Handle cell highlights - collect all highlight calls
+    const highlightCalls = toolCalls.filter(call => call?.kind === 'highlight' && call.status === 'ok');
+    if (highlightCalls.length > 0) {
+      const newHighlights = highlightCalls
+        .filter(call => call.sheetId && (call.range || (call.column && call.values)))
+        .map(call => ({
+          sheetId: call.sheetId!,
+          range: call.range,
+          column: call.column,
+          values: call.values,
+          color: call.color || 'yellow',
+          message: call.message || null,
+        }));
+
+      setActiveHighlights(prev => [...prev, ...newHighlights]);
     }
   };
 
@@ -599,8 +610,8 @@ const SpreadsheetView = () => {
     console.log("Chat command:", command);
   };
 
-  const clearHighlight = () => {
-    setActiveHighlight(null);
+  const clearHighlights = () => {
+    setActiveHighlights([]);
   };
 
   const updateColumnWidth = (colIndex: number, width: number) => {
@@ -760,7 +771,7 @@ const SpreadsheetView = () => {
                 onRowResize={updateRowHeight}
                 getColumnWidth={getColumnWidth}
                 getRowHeight={getRowHeight}
-                highlight={activeHighlight?.sheetId === activeSheet.id ? activeHighlight : null}
+                highlights={activeHighlights.filter(h => h.sheetId === activeSheet.id)}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -786,8 +797,8 @@ const SpreadsheetView = () => {
             spreadsheetId={spreadsheetId}
             onCommand={handleChatCommand}
             onAssistantToolCalls={handleAssistantToolCalls}
-            highlight={activeHighlight}
-            onClearHighlight={clearHighlight}
+            highlights={activeHighlights}
+            onClearHighlights={clearHighlights}
           />
         </div>
       </div>
