@@ -27,7 +27,25 @@ const SpreadsheetView = () => {
   
   const [spreadsheet, setSpreadsheet] = useState<SpreadsheetRecord | null>(null);
   const [sheets, setSheets] = useState<SheetData[]>([]);
-  const [activeSheetId, setActiveSheetId] = useState<string>("");
+  const storageKey = spreadsheetId ? `activeSheet-${spreadsheetId}` : null;
+  const [activeSheetId, setActiveSheetIdState] = useState<string>(() => {
+    if (!storageKey) return "";
+    try {
+      return localStorage.getItem(storageKey) || "";
+    } catch {
+      return "";
+    }
+  });
+
+  const setActiveSheetId = useCallback((sheetId: string) => {
+    setActiveSheetIdState(sheetId);
+    if (!storageKey) return;
+    try {
+      localStorage.setItem(storageKey, sheetId);
+    } catch {
+      // ignore storage failures
+    }
+  }, [storageKey]);
   const [selection, setSelection] = useState<CellSelection>({
     start: { row: 0, col: 0 },
     end: { row: 0, col: 0 },
@@ -235,7 +253,11 @@ const SpreadsheetView = () => {
 
       setSheets(loadedSheets);
       if (loadedSheets.length > 0) {
-        setActiveSheetId(loadedSheets[0].id);
+        const currentActive = activeSheetId && loadedSheets.some(sheet => sheet.id === activeSheetId)
+          ? activeSheetId
+          : loadedSheets[0].id;
+
+        setActiveSheetId(currentActive);
       }
     } catch (error) {
       console.error('Error loading spreadsheet:', error);

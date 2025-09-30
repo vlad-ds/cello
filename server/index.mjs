@@ -856,6 +856,21 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
 
   touchSheet(sheetId);
 
+  if (operation === 'insert') {
+    const maxRow = db
+      .prepare(`SELECT COALESCE(MAX(row_number), 0) AS maxRow FROM "${tableName}" WHERE row_number IS NOT NULL`)
+      .get()?.maxRow ?? 0;
+
+    const rowsWithoutRowNumber = db
+      .prepare(`SELECT rowid FROM "${tableName}" WHERE row_number IS NULL ORDER BY rowid`)
+      .all();
+
+    rowsWithoutRowNumber.forEach((row, index) => {
+      const rowNumber = maxRow + index + 1;
+      db.prepare(`UPDATE "${tableName}" SET row_number = ? WHERE rowid = ?`).run(rowNumber, row.rowid);
+    });
+  }
+
   return {
     sheet,
     tableName,
