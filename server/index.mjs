@@ -95,6 +95,8 @@ const parseEnvInt = (value, fallback) => {
 };
 
 const AI_CONFIG = {
+  provider: (process.env.AI_FUNCTION_PROVIDER || 'openai').toLowerCase(),
+  model: process.env.AI_FUNCTION_MODEL || null,
   timeoutMs: Math.max(1000, parseEnvInt(process.env.AI_FUNCTION_TIMEOUT_MS, 90000)),
   maxRetries: Math.max(0, parseEnvInt(process.env.AI_FUNCTION_MAX_RETRIES, 1)),
   retryDelayMs: Math.max(0, parseEnvInt(process.env.AI_FUNCTION_RETRY_DELAY_MS, 1000)),
@@ -138,9 +140,22 @@ const enforceAiBatchLimit = () => {
 
 // Register AI() SQL function
 const callAiSync = (prompt, schemaType = null) => {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY not configured');
+  const provider = AI_CONFIG.provider;
+
+  // Get API key based on provider
+  let apiKey;
+  if (provider === 'gemini') {
+    apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY not configured');
+    }
+  } else if (provider === 'openai') {
+    apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY not configured');
+    }
+  } else {
+    throw new Error(`Unknown AI_FUNCTION_PROVIDER: ${provider}. Use 'openai' or 'gemini'.`);
   }
 
   enforceAiBatchLimit();
@@ -148,66 +163,140 @@ const callAiSync = (prompt, schemaType = null) => {
   const baseTimestamp = new Date().toISOString();
   const promptPreview = prompt?.substring(0, 500) + (prompt?.length > 500 ? '...' : '');
 
-  const buildGenerationConfig = () => {
-    const config = {
+  // Build request based on provider
+  let payload, url, curlCommand;
+  const curlTimeoutSeconds = Math.max(1, Math.ceil(AI_CONFIG.timeoutMs / 1000));
+
+  if (provider === 'openai') {
+    const model = AI_CONFIG.model || 'gpt-4o-mini';
+    const systemMessage = 'You are a data processing assistant. Respond directly and concisely. Never use markdown formatting. Start immediately with your answer without preamble like "OK" or "Here\'s the response". Just provide the requested information.';
+
+    const requestBody = {
+      model,
+      messages: [
+        { role: 'system', content: systemMessage },
+        { role: 'user', content: String(prompt) }
+      ],
       temperature: 0.3,
-      topK: 32,
-      topP: 0.9,
-      maxOutputTokens: schemaType === 'boolean' ? 10 : 1024,
+      max_tokens: schemaType === 'boolean' ? 10 : 1024,
     };
 
+    // Add structured output if schema type is provided
     if (schemaType === 'boolean') {
-      config.responseMimeType = 'application/json';
-      config.responseSchema = {
-        type: 'object',
-        properties: {
-          answer: {
-            type: 'boolean',
-            description: 'The boolean answer to the question',
+      requestBody.response_format = {
+        type: 'json_schema',
+        json_schema: {
+          name: 'boolean_response',
+          strict: true,
+          schema: {
+            type: 'object',
+            properties: {
+              answer: {
+                type: 'boolean',
+                description: 'The boolean answer to the question',
+              },
+            },
+            required: ['answer'],
+            additionalProperties: false,
           },
         },
-        required: ['answer'],
       };
     } else if (schemaType && schemaType.startsWith('[') && schemaType.endsWith(']')) {
       try {
         const enumValues = JSON.parse(schemaType.replace(/'/g, '"'));
-        config.responseMimeType = 'application/json';
-        config.responseSchema = {
-          type: 'object',
-          properties: {
-            answer: {
-              type: 'string',
-              enum: enumValues,
-              description: 'The answer selected from the allowed values',
+        requestBody.response_format = {
+          type: 'json_schema',
+          json_schema: {
+            name: 'enum_response',
+            strict: true,
+            schema: {
+              type: 'object',
+              properties: {
+                answer: {
+                  type: 'string',
+                  enum: enumValues,
+                  description: 'The answer selected from the allowed values',
+                },
+              },
+              required: ['answer'],
+              additionalProperties: false,
             },
           },
-          required: ['answer'],
         };
-        config.maxOutputTokens = 50;
+        requestBody.max_tokens = 50;
       } catch (error) {
         // Invalid enum format, fall back to text mode
       }
     }
 
-    return config;
-  };
+    payload = JSON.stringify(requestBody);
+    url = 'https://api.openai.com/v1/chat/completions';
+    const curlPayload = payload.replace(/'/g, "'\\''");
+    curlCommand = `curl -s -X POST "${url}" -H "Content-Type: application/json" -H "Authorization: Bearer ${apiKey}" --max-time ${curlTimeoutSeconds} -d '${curlPayload}'`;
+  } else {
+    // Gemini
+    const model = AI_CONFIG.model || 'gemini-2.0-flash-exp';
 
-  const generationConfig = buildGenerationConfig();
-  const payload = JSON.stringify({
-    systemInstruction: {
-      parts: [{ text: 'You are a data processing assistant. Respond directly and concisely. Never use markdown formatting. Start immediately with your answer without preamble like "OK" or "Here\'s the response". Just provide the requested information.' }],
-    },
-    contents: [{
-      role: 'user',
-      parts: [{ text: String(prompt) }],
-    }],
-    generationConfig,
-  });
+    const buildGenerationConfig = () => {
+      const config = {
+        temperature: 0.3,
+        topK: 32,
+        topP: 0.9,
+        maxOutputTokens: schemaType === 'boolean' ? 10 : 1024,
+      };
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const curlPayload = payload.replace(/'/g, "'\\''");
-  const curlTimeoutSeconds = Math.max(1, Math.ceil(AI_CONFIG.timeoutMs / 1000));
-  const curlCommand = `curl -s -X POST "${url}" -H "Content-Type: application/json" --max-time ${curlTimeoutSeconds} -d '${curlPayload}'`;
+      if (schemaType === 'boolean') {
+        config.responseMimeType = 'application/json';
+        config.responseSchema = {
+          type: 'object',
+          properties: {
+            answer: {
+              type: 'boolean',
+              description: 'The boolean answer to the question',
+            },
+          },
+          required: ['answer'],
+        };
+      } else if (schemaType && schemaType.startsWith('[') && schemaType.endsWith(']')) {
+        try {
+          const enumValues = JSON.parse(schemaType.replace(/'/g, '"'));
+          config.responseMimeType = 'application/json';
+          config.responseSchema = {
+            type: 'object',
+            properties: {
+              answer: {
+                type: 'string',
+                enum: enumValues,
+                description: 'The answer selected from the allowed values',
+              },
+            },
+            required: ['answer'],
+          };
+          config.maxOutputTokens = 50;
+        } catch (error) {
+          // Invalid enum format, fall back to text mode
+        }
+      }
+
+      return config;
+    };
+
+    const generationConfig = buildGenerationConfig();
+    payload = JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: 'You are a data processing assistant. Respond directly and concisely. Never use markdown formatting. Start immediately with your answer without preamble like "OK" or "Here\'s the response". Just provide the requested information.' }],
+      },
+      contents: [{
+        role: 'user',
+        parts: [{ text: String(prompt) }],
+      }],
+      generationConfig,
+    });
+
+    url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const curlPayload = payload.replace(/'/g, "'\\''");
+    curlCommand = `curl -s -X POST "${url}" -H "Content-Type: application/json" --max-time ${curlTimeoutSeconds} -d '${curlPayload}'`;
+  }
 
   const execOptions = {
     encoding: 'utf-8',
@@ -224,6 +313,7 @@ const callAiSync = (prompt, schemaType = null) => {
     logToFile('ai-function-request', {
       timestamp: baseTimestamp,
       attempt,
+      provider,
       prompt: promptPreview,
       promptLength: prompt?.length || 0,
       schemaType,
@@ -239,15 +329,35 @@ const callAiSync = (prompt, schemaType = null) => {
       const durationMs = Date.now() - start;
       const data = JSON.parse(response);
 
-      const candidate = data?.candidates?.[0];
-      finishReason = candidate?.finishReason ?? candidate?.finish_reason ?? null;
-      safetyInfo = candidate?.safetyRatings ?? candidate?.safety_ratings ?? null;
+      let text = '';
+      let annotations = [];
 
-      const text = candidate?.content?.parts
-        ?.map((part) => part?.text ?? '')
-        ?.filter(Boolean)
-        ?.join('\n')
-        ?.trim() ?? '';
+      if (provider === 'openai') {
+        // Parse OpenAI response
+        const choice = data?.choices?.[0];
+        finishReason = choice?.finish_reason ?? null;
+        text = choice?.message?.content ?? '';
+
+        // Check for errors
+        if (data?.error) {
+          throw new Error(data.error.message || JSON.stringify(data.error));
+        }
+      } else {
+        // Parse Gemini response
+        const candidate = data?.candidates?.[0];
+        finishReason = candidate?.finishReason ?? candidate?.finish_reason ?? null;
+        safetyInfo = candidate?.safetyRatings ?? candidate?.safety_ratings ?? null;
+
+        annotations = candidate?.content?.parts
+          ?.flatMap((part) => part?.inlineData || part?.inline_data ? [] : part?.annotations || [])
+          ?.filter(Boolean) ?? [];
+
+        text = candidate?.content?.parts
+          ?.map((part) => part?.text ?? '')
+          ?.filter(Boolean)
+          ?.join('\n')
+          ?.trim() ?? '';
+      }
 
       let finalResult = text;
       if (schemaType && text) {
@@ -262,23 +372,32 @@ const callAiSync = (prompt, schemaType = null) => {
       }
 
       if (!finalResult || finalResult.trim().length === 0) {
-        const placeholder = '[AI returned no content]';
-
+        const annotationReasons = annotations.map((ann) => ann?.reason || ann?.type).filter(Boolean);
         logToFile('ai-function-empty', {
           timestamp: baseTimestamp,
           attempt,
+          provider,
           prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
           finishReason,
           safety: safetyInfo,
-          message: 'Gemini responded with empty text. Using placeholder instead.',
+          annotations: annotationReasons,
+          message: `${provider} responded with empty text.`,
         });
 
-        finalResult = placeholder;
+        if (attempt <= AI_CONFIG.maxRetries) {
+          if (AI_CONFIG.retryDelayMs > 0) {
+            sleepSync(AI_CONFIG.retryDelayMs);
+          }
+          continue;
+        }
+
+        finalResult = '[AI returned no content]';
       }
 
       logToFile('ai-function-response', {
         timestamp: baseTimestamp,
         attempt,
+        provider,
         durationMs,
         prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
         response: finalResult?.substring(0, 500) + (finalResult?.length > 500 ? '...' : ''),
@@ -286,6 +405,7 @@ const callAiSync = (prompt, schemaType = null) => {
         schemaType,
         finishReason,
         safety: safetyInfo,
+        annotations: annotations.length ? annotations : undefined,
       });
 
       return finalResult;
@@ -297,6 +417,7 @@ const callAiSync = (prompt, schemaType = null) => {
       logToFile('ai-function-error', {
         timestamp: baseTimestamp,
         attempt,
+        provider,
         durationMs,
         prompt: prompt?.substring(0, 200) + (prompt?.length > 200 ? '...' : ''),
         error: errorMessage,
@@ -605,6 +726,18 @@ const resolveSheetReference = (sheetMetas, rawValue) => {
   return null;
 };
 
+const getSheetMetasForSpreadsheet = (spreadsheetId) => {
+  return db
+    .prepare('SELECT id, name FROM sheets WHERE spreadsheet_id = ?')
+    .all(spreadsheetId)
+    .map((sheet) => ({
+      id: sheet.id,
+      name: sheet.name,
+      slug: slugifySheetName(sheet.name),
+      columns: [],
+    }));
+};
+
 // Functions removed: createHeaderFromSqlName, syncNewSheetColumns
 // Column metadata is now read directly from PRAGMA table_info instead of sheet_columns table
 
@@ -637,10 +770,18 @@ const executeSheetSql = (spreadsheetId, sheetId, rawSql) => {
 
   let sql = rawSql.trim();
 
-  // Replace sheet references with actual table name
+  // Replace sheet references with actual table name(s)
   const tableName = tableNameForSheet(sheetId);
   const refPattern = /context\.spreadsheet\.sheets\[['"]([^'"]+)['"]\]/gi;
-  sql = sql.replace(refPattern, `"${tableName}"`);
+  const sheetMetas = getSheetMetasForSpreadsheet(spreadsheetId);
+
+  sql = sql.replace(refPattern, (fullMatch) => {
+    const resolved = resolveSheetReference(sheetMetas, fullMatch);
+    if (!resolved) {
+      throw new Error(`Unknown sheet reference: ${fullMatch}`);
+    }
+    return `"${tableNameForSheet(resolved.sheet.id)}"`;
+  });
 
   if (!/^\s*(with|select)\b/i.test(sql)) {
     throw new Error('Only SELECT queries (optionally starting with WITH) are supported.');
@@ -802,10 +943,21 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
 
   let sql = rawSql.trim();
 
-  // Replace sheet references with actual table name
+  // Replace sheet references with actual table name(s)
   const tableName = tableNameForSheet(sheetId);
   const refPattern = /context\.spreadsheet\.sheets\[['"]([^'"]+)['"]\]/gi;
-  sql = sql.replace(refPattern, `"${tableName}"`);
+  const sheetMetas = getSheetMetasForSpreadsheet(spreadsheetId);
+  const referencedTables = new Set();
+
+  sql = sql.replace(refPattern, (fullMatch) => {
+    const resolved = resolveSheetReference(sheetMetas, fullMatch);
+    if (!resolved) {
+      throw new Error(`Unknown sheet reference: ${fullMatch}`);
+    }
+    const resolvedTable = tableNameForSheet(resolved.sheet.id);
+    referencedTables.add(resolvedTable.toLowerCase());
+    return `"${resolvedTable}"`;
+  });
 
   const statements = sql
     .split(';')
@@ -839,6 +991,17 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
   const disallowedPattern = /\b(delete|drop|truncate|replace|attach|detach|vacuum|pragma|reindex|analyze|begin|commit|rollback|savepoint|release|merge)\b/i;
   if (disallowedPattern.test(sql)) {
     throw new Error('Destructive statements are not allowed.');
+  }
+
+  if (!referencedTables.has(tableName.toLowerCase())) {
+    referencedTables.add(tableName.toLowerCase());
+  }
+
+  if (operation !== 'insert' && operation !== 'update') {
+    const invalidRefs = Array.from(referencedTables).filter((tbl) => tbl !== tableName.toLowerCase());
+    if (invalidRefs.length > 0) {
+      throw new Error('Statements may reference other sheets only within INSERT ... SELECT or UPDATE operations.');
+    }
   }
 
   const stmt = db.prepare(sql);
@@ -978,10 +1141,26 @@ const setCellValue = (sheetId, rowNumber, columnIndex, value) => {
       db.prepare(`DELETE FROM "${tableName}" WHERE row_number = ?`).run(storedRow);
     }
   } else {
-    db.prepare(
-      `INSERT INTO "${tableName}" (row_number, "${column.sql_name}") VALUES (?, ?)
-       ON CONFLICT(row_number) DO UPDATE SET "${column.sql_name}" = excluded."${column.sql_name}"`
-    ).run(storedRow, value);
+    const upsertSql = `INSERT INTO "${tableName}" (row_number, "${column.sql_name}") VALUES (?, ?)
+       ON CONFLICT(row_number) DO UPDATE SET "${column.sql_name}" = excluded."${column.sql_name}"`;
+    try {
+      db.prepare(upsertSql).run(storedRow, value);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/ON CONFLICT clause does not match/i.test(message)) {
+        throw error;
+      }
+
+      const existing = db
+        .prepare(`SELECT rowid FROM "${tableName}" WHERE row_number = ? LIMIT 1`)
+        .get(storedRow);
+
+      if (existing) {
+        db.prepare(`UPDATE "${tableName}" SET "${column.sql_name}" = ? WHERE row_number = ?`).run(value, storedRow);
+      } else {
+        db.prepare(`INSERT INTO "${tableName}" (row_number, "${column.sql_name}") VALUES (?, ?)`).run(storedRow, value);
+      }
+    }
   }
 };
 
