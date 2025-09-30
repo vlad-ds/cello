@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Sparkles, Info, Database, ChevronDown, Hammer } from "lucide-react";
+import { Send, Bot, User, Sparkles, Info, Database, ChevronDown, Hammer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { supabase } from "@/integrations/supabase/client";
 import { backendConfig } from "@/config/backend";
-import { dataClient, isSupabaseBackend } from "@/integrations/database";
+import { dataClient, isSupabaseBackend, type CellHighlight } from "@/integrations/database";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { toast } from "@/components/ui/sonner";
@@ -33,7 +33,7 @@ interface ToolCall {
   truncated?: boolean;
   columns?: string[];
   error?: string;
-  kind?: "read" | "write";
+  kind?: "read" | "write" | "highlight";
   operation?: "select" | "update" | "insert" | "alter";
   changes?: number;
   lastInsertRowid?: number | string;
@@ -42,6 +42,11 @@ interface ToolCall {
     sqlName: string;
     columnIndex: number;
   }[];
+  range?: string;
+  column?: string;
+  values?: (string | number | boolean | null)[];
+  color?: string;
+  message?: string | null;
 }
 
 interface ChatPanelProps {
@@ -49,6 +54,8 @@ interface ChatPanelProps {
   onAssistantToolCalls?: (toolCalls: ToolCall[] | null | undefined) => void;
   selectedCells?: { [key: string]: string };
   spreadsheetId?: string;
+  highlight?: CellHighlight | null;
+  onClearHighlight?: () => void;
 }
 
 const getRangeValue = (selectedCells?: { [key: string]: string }) => {
@@ -90,7 +97,7 @@ const welcomeMessage: Message = {
   toolCalls: null,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, highlight, onClearHighlight }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -348,6 +355,39 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         </div>
       </div>
 
+      {/* Active Highlight Banner */}
+      {highlight && (
+        <div className="p-3 border-b border-border bg-muted/50 flex items-start gap-3">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <div className={`w-3 h-3 rounded-sm ${
+                highlight.color === 'yellow' ? 'bg-yellow-400' :
+                highlight.color === 'red' ? 'bg-red-400' :
+                highlight.color === 'green' ? 'bg-green-400' :
+                highlight.color === 'blue' ? 'bg-blue-400' :
+                highlight.color === 'orange' ? 'bg-orange-400' :
+                highlight.color === 'purple' ? 'bg-purple-400' :
+                'bg-yellow-400'
+              }`} />
+              <span className="text-sm font-medium">
+                Highlighting {highlight.range || `${highlight.column}: ${highlight.values?.join(', ')}`}
+              </span>
+            </div>
+            {highlight.message && (
+              <p className="text-xs text-muted-foreground">{highlight.message}</p>
+            )}
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 flex-shrink-0"
+            onClick={onClearHighlight}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
+
       {/* Messages */}
       <ScrollArea ref={scrollAreaRef} className="flex-1 p-4">
         <div className="space-y-4">
@@ -394,6 +434,56 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                     {message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0 && (
                       <div className="mt-3 space-y-3">
                         {message.toolCalls.map((toolCall, index) => {
+                          // Handle highlight tool calls separately
+                          if (toolCall.kind === 'highlight') {
+                            return (
+                              <div
+                                key={`highlight-${index}`}
+                                className="rounded-md border border-border/70 p-3 text-sm bg-muted/30"
+                              >
+                                <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                                  <Sparkles className="h-4 w-4" />
+                                  <span>
+                                    Highlighted cells {toolCall.range || `${toolCall.column}: ${toolCall.values?.join(', ')}`}
+                                    {toolCall.sheetName
+                                      ? ` in ${toolCall.sheetName}`
+                                      : toolCall.sheetId
+                                      ? ` in sheet ${toolCall.sheetId}`
+                                      : ''}
+                                  </span>
+                                  <Badge variant={toolCall.status === 'error' ? 'destructive' : 'secondary'}>
+                                    {toolCall.status === 'error' ? 'Error' : 'Highlight'}
+                                  </Badge>
+                                </div>
+                                {toolCall.color && (
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <div className={`w-4 h-4 rounded-sm ${
+                                      toolCall.color === 'yellow' ? 'bg-yellow-400' :
+                                      toolCall.color === 'red' ? 'bg-red-400' :
+                                      toolCall.color === 'green' ? 'bg-green-400' :
+                                      toolCall.color === 'blue' ? 'bg-blue-400' :
+                                      toolCall.color === 'orange' ? 'bg-orange-400' :
+                                      toolCall.color === 'purple' ? 'bg-purple-400' :
+                                      'bg-yellow-400'
+                                    }`} />
+                                    <span className="text-xs text-muted-foreground capitalize">{toolCall.color}</span>
+                                  </div>
+                                )}
+                                {toolCall.message && (
+                                  <p className="mt-2 text-xs text-muted-foreground italic">
+                                    {toolCall.message}
+                                  </p>
+                                )}
+                                {toolCall.error && (
+                                  <p className="mt-2 text-xs text-destructive">
+                                    {toolCall.error}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          // Handle SQL tool calls (read/write)
                           const sqlMarkdown = toolCall.sql
                             ? '```sql\n' + toolCall.sql.trim() + '\n```'
                             : '_No SQL provided._';

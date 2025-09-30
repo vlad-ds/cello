@@ -12,6 +12,7 @@ import {
   type SpreadsheetRecord,
   type ToolCall,
   type SheetTableData,
+  type CellHighlight,
 } from "@/integrations/database";
 import { useSpreadsheetSync } from "@/hooks/useSpreadsheetSync";
 import { CellData, SheetData, CellSelection, Action } from "./Index";
@@ -39,6 +40,7 @@ const SpreadsheetView = () => {
   const [history, setHistory] = useState<Action[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [isLoading, setIsLoading] = useState(true);
+  const [activeHighlight, setActiveHighlight] = useState<CellHighlight | null>(null);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
 
@@ -572,14 +574,33 @@ const SpreadsheetView = () => {
 
   const handleAssistantToolCalls = (toolCalls: ToolCall[] | null | undefined) => {
     if (!toolCalls || toolCalls.length === 0) return;
+
+    // Handle data mutations - refresh the sheet
     const hasMutation = toolCalls.some(call => call?.kind === 'write' && call.status === 'ok');
     if (hasMutation) {
       refreshActiveSheetFromServer();
+    }
+
+    // Handle cell highlights - set active highlight
+    const highlightCall = toolCalls.find(call => call?.kind === 'highlight' && call.status === 'ok');
+    if (highlightCall && highlightCall.sheetId && (highlightCall.range || (highlightCall.column && highlightCall.values))) {
+      setActiveHighlight({
+        sheetId: highlightCall.sheetId,
+        range: highlightCall.range,
+        column: highlightCall.column,
+        values: highlightCall.values,
+        color: highlightCall.color || 'yellow',
+        message: highlightCall.message || null,
+      });
     }
   };
 
   const handleChatCommand = (command: string) => {
     console.log("Chat command:", command);
+  };
+
+  const clearHighlight = () => {
+    setActiveHighlight(null);
   };
 
   const updateColumnWidth = (colIndex: number, width: number) => {
@@ -739,6 +760,7 @@ const SpreadsheetView = () => {
                 onRowResize={updateRowHeight}
                 getColumnWidth={getColumnWidth}
                 getRowHeight={getRowHeight}
+                highlight={activeHighlight?.sheetId === activeSheet.id ? activeHighlight : null}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -759,11 +781,13 @@ const SpreadsheetView = () => {
           className="bg-card border-l border-border flex flex-col"
           style={{ width: `${chatPanelWidth}px` }}
         >
-          <ChatPanel 
+          <ChatPanel
             selectedCells={getSelectedCellsContent()}
             spreadsheetId={spreadsheetId}
             onCommand={handleChatCommand}
             onAssistantToolCalls={handleAssistantToolCalls}
+            highlight={activeHighlight}
+            onClearHighlight={clearHighlight}
           />
         </div>
       </div>

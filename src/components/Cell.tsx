@@ -16,6 +16,8 @@ interface CellProps {
   onSelectionChange?: (selection: any) => void;
   selection?: any;
   ROWS?: number;
+  isHighlighted?: boolean;
+  highlightColor?: string;
 }
 
 export const Cell = ({
@@ -33,6 +35,8 @@ export const Cell = ({
   onSelectionChange,
   selection,
   ROWS,
+  isHighlighted = false,
+  highlightColor = 'yellow',
 }: CellProps) => {
   const [editValue, setEditValue] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -82,10 +86,27 @@ export const Cell = ({
     }
   };
 
+  // Map highlight colors to Tailwind classes
+  const getHighlightClasses = () => {
+    if (!isHighlighted) return '';
+
+    const colorMap: Record<string, string> = {
+      yellow: 'bg-yellow-200/70 hover:bg-yellow-200/80',
+      red: 'bg-red-200/70 hover:bg-red-200/80',
+      green: 'bg-green-200/70 hover:bg-green-200/80',
+      blue: 'bg-blue-200/70 hover:bg-blue-200/80',
+      orange: 'bg-orange-200/70 hover:bg-orange-200/80',
+      purple: 'bg-purple-200/70 hover:bg-purple-200/80',
+    };
+
+    return colorMap[highlightColor] || colorMap.yellow;
+  };
+
   const cellClassName = cn(
-    "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell overflow-hidden",
+    "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell overflow-hidden relative",
     isHeader && "bg-grid-header text-grid-header-foreground font-medium cursor-text items-center",
-    !isHeader && "bg-grid hover:bg-grid-hover",
+    !isHeader && !isHighlighted && "bg-grid hover:bg-grid-hover",
+    !isHeader && isHighlighted && getHighlightClasses(),
     isSelected && !isHeader && "bg-grid-selected z-10",
     className
   );

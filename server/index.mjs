@@ -9,9 +9,26 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dataDir = path.resolve(__dirname, '..', 'data');
+const logsDir = path.join(dataDir, 'logs');
 const dbPath = path.join(dataDir, 'app.db');
 
 fs.mkdirSync(dataDir, { recursive: true });
+fs.mkdirSync(logsDir, { recursive: true });
+
+// Logger utility
+const logToFile = (category, data) => {
+  const timestamp = new Date().toISOString();
+  const logFile = path.join(logsDir, `${category}.log`);
+  const logEntry = `\n========== ${timestamp} ==========\n${
+    typeof data === 'string' ? data : JSON.stringify(data, null, 2)
+  }\n`;
+
+  try {
+    fs.appendFileSync(logFile, logEntry);
+  } catch (error) {
+    console.error('Failed to write log:', error);
+  }
+};
 
 const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
@@ -357,7 +374,13 @@ const executeSheetSql = (spreadsheetId, sheetId, rawSql) => {
     throw new Error('Invalid sheetId provided for this spreadsheet.');
   }
 
-  const sql = rawSql.trim();
+  let sql = rawSql.trim();
+
+  // Replace sheet references with actual table name
+  const tableName = tableNameForSheet(sheetId);
+  const refPattern = /context\.spreadsheet\.sheets\[['"]([^'"]+)['"]\]/gi;
+  sql = sql.replace(refPattern, `"${tableName}"`);
+
   if (!/^\s*(with|select)\b/i.test(sql)) {
     throw new Error('Only SELECT queries (optionally starting with WITH) are supported.');
   }
@@ -375,7 +398,6 @@ const executeSheetSql = (spreadsheetId, sheetId, rawSql) => {
     throw new Error('Please provide a single SQL statement at a time.');
   }
 
-  const tableName = tableNameForSheet(sheetId);
   const tableRegex = new RegExp(`\"?${escapeForRegex(tableName)}\"?`, 'i');
   if (!tableRegex.test(sql)) {
     throw new Error(`Reference the sheet table name "${tableName}" in your query.`);
@@ -431,7 +453,13 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
     throw new Error('Invalid sheetId provided for this spreadsheet.');
   }
 
-  const sql = rawSql.trim();
+  let sql = rawSql.trim();
+
+  // Replace sheet references with actual table name
+  const tableName = tableNameForSheet(sheetId);
+  const refPattern = /context\.spreadsheet\.sheets\[['"]([^'"]+)['"]\]/gi;
+  sql = sql.replace(refPattern, `"${tableName}"`);
+
   const statements = sql
     .split(';')
     .map((part) => part.trim())
@@ -440,7 +468,6 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
     throw new Error('Provide exactly one SQL statement.');
   }
 
-  const tableName = tableNameForSheet(sheetId);
   const tableRegex = new RegExp(`\"?${escapeForRegex(tableName)}\"?`, 'i');
   if (!tableRegex.test(sql)) {
     throw new Error(`Reference the sheet table name "${tableName}" in your statement.`);
@@ -891,12 +918,15 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
 
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
-    'You may call the function `executeSheetSql` to run a read-only SQL query on a sheet table when and only when the user explicitly instructs you to run SQL or asks for a SQL query execution.',
-    'When you call a function, include a single SQL statement that references the sheet table name in the format `"sheet_<sheetId>"`. Wrap table and column identifiers in double quotes.',
-    'Use the function `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements that reference the provided sheet table.',
-    'If a function call fails, analyze the error message and try an alternative SQL approach automatically before giving up, unless no safe fix exists.',
+    'You have access to three functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), and highlightCells (for visual emphasis).',
+    'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
+    'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
+    'Use `highlightCells` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
+    'For data-based highlighting: Query with executeSheetSql to get the values, then use highlightCells with column/values. Example: To highlight highest and lowest grades, SELECT the top and bottom values, then call highlightCells with column: "grade" and values: [28, 4]. This is simpler than converting row_numbers to A1 notation and works for multiple scattered cells.',
+    'IMPORTANT: When passing function parameters, ensure all string values are properly escaped. Do not include unescaped quotes or special characters in function parameters. Keep parameter content concise to avoid exceeding token limits.',
+    'If a function call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
     'When calling a function, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
-    'Each sheet table contains a `row_number` column in addition to the columns listed below. Summarize tool results for the user instead of pasting large tables verbatim. If the tool response reports an error or indicates truncation, explain that to the user.',
+    'Each sheet table contains a `row_number` column that corresponds to the spreadsheet row number. Always SELECT row_number when you need to highlight cells based on query results. Summarize tool results for the user instead of pasting large tables verbatim.',
   ].join('\n\n');
 
   const contents = listChatMessages(req.params.id).map((message) => {
@@ -969,6 +999,49 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
             required: ['sheet', 'sql'],
           },
         },
+        {
+          name: 'highlightCells',
+          description:
+            'Draw visual attention to specific cells or ranges by applying a colored overlay. Use this to help the user see results of an analysis or locate important data.',
+          parameters: {
+            type: 'object',
+            properties: {
+              sheet: {
+                type: 'string',
+                description: sheetReferenceList
+                  ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
+                  : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
+              },
+              range: {
+                type: 'string',
+                description:
+                  'Cell range to highlight in A1 notation (e.g., "A1", "B2:D5", "A1:A10"). Use this for specific cell locations. Mutually exclusive with column/values.',
+              },
+              column: {
+                type: 'string',
+                description:
+                  'Column name (SQL column name like "grade") to search for matching values. Use with "values" parameter. Mutually exclusive with range.',
+              },
+              values: {
+                type: 'array',
+                items: {},
+                description:
+                  'Array of values to highlight in the specified column. All cells in the column matching these values will be highlighted. Use with "column" parameter. Can contain strings, numbers, booleans, or null.',
+              },
+              color: {
+                type: 'string',
+                enum: ['yellow', 'red', 'green', 'blue', 'orange', 'purple'],
+                description: 'Highlight color (defaults to yellow if not specified).',
+              },
+              message: {
+                type: 'string',
+                description:
+                  'Optional message explaining why these cells are highlighted (shown to user).',
+              },
+            },
+            required: ['sheet'],
+          },
+        },
       ],
     },
   ];
@@ -978,6 +1051,9 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     topK: 32,
     topP: 0.95,
     maxOutputTokens: 1024,
+    thinkingConfig: {
+      thinkingBudget: 8192  // Increased thinking budget for better reasoning
+    }
   };
 
   const getTextFromParts = (parts) =>
@@ -1015,6 +1091,13 @@ const buildRequestPayload = (conversationContents) => ({
       iteration += 1;
 
       const payload = buildRequestPayload(conversation);
+      logToFile('gemini-request', {
+        iteration,
+        spreadsheetId: req.params.id,
+        userQuery: trimmedQuery,
+        payload
+      });
+
       const response = await fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=' +
           encodeURIComponent(GEMINI_API_KEY),
@@ -1034,6 +1117,12 @@ const buildRequestPayload = (conversationContents) => ({
       }
 
       const data = await response.json();
+      logToFile('gemini-response', {
+        iteration,
+        spreadsheetId: req.params.id,
+        response: data
+      });
+
       const candidate = data?.candidates?.[0];
       lastCandidate = candidate ?? lastCandidate;
       const candidateContent = candidate?.content ?? null;
@@ -1045,10 +1134,38 @@ const buildRequestPayload = (conversationContents) => ({
 
       const finishReason = candidate?.finishReason || candidate?.finish_reason;
 
+      logToFile('gemini-parsing', {
+        iteration,
+        finishReason,
+        candidateParts
+      });
+
       const functionCallPart =
         candidateParts.find((part) => part?.functionCall || part?.function_call) ?? null;
 
       if (!functionCallPart) {
+        // Check if this is a recoverable error that should be retried
+        if (finishReason === 'MALFORMED_FUNCTION_CALL' && iteration < maxIterations) {
+          // Add error feedback to conversation to help model recover
+          // Only add candidateContent if it has a valid role
+          if (candidateContent && candidateContent.role) {
+            conversation = [...conversation, candidateContent];
+          }
+          conversation = [
+            ...conversation,
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: 'Your function call was malformed. Do not apologize. Silently reformulate and immediately try again with properly escaped parameters.',
+                },
+              ],
+            },
+          ];
+          continue; // Retry
+        }
+
+        // Otherwise, accept text response or break
         if (textFromParts) {
           assistantText = textFromParts;
         }
@@ -1058,6 +1175,12 @@ const buildRequestPayload = (conversationContents) => ({
       const rawCall = functionCallPart.functionCall || functionCallPart.function_call;
       const callName = rawCall?.name;
       const rawArgs = rawCall?.args ?? rawCall?.arguments;
+
+      logToFile('gemini-function-call', {
+        iteration,
+        callName,
+        rawArgs
+      });
 
       let parsedArgs = {};
       if (rawArgs) {
@@ -1087,15 +1210,24 @@ const buildRequestPayload = (conversationContents) => ({
       const sheetMeta = sheetMetas.find((sheet) => sheet.id === sheetId) || resolvedSheet?.sheet;
       const sheetReferenceLabel = resolvedSheet?.reference ?? sheetArg ?? sheetId;
 
+      logToFile('gemini-tool-prep', {
+        iteration,
+        callName,
+        parsedArgs,
+        sheetArg,
+        resolvedSheetName: sheetMeta?.name,
+        resolvedSheetId: sheetMeta?.id
+      });
+
       let toolResultPayload = null;
       let toolCallRecord = null;
 
       try {
-        if (!sheetMeta || !sheetMeta.id || !trimmedSql.trim()) {
+        if (callName !== 'highlightCells' && (!sheetMeta || !sheetMeta.id || !trimmedSql.trim())) {
           throw new Error('Both sheet reference and sql are required for this tool call.');
         }
 
-        const targetSheetId = sheetMeta.id;
+        const targetSheetId = sheetMeta?.id;
 
         if (callName === 'mutateSheetSql') {
           const execution = executeSheetSqlMutation(req.params.id, targetSheetId, trimmedSql);
@@ -1160,27 +1292,89 @@ const buildRequestPayload = (conversationContents) => ({
             columns: execution.columns,
             reference: sheetReferenceLabel,
           };
+        } else if (callName === 'highlightCells') {
+          if (!sheetMeta || !sheetMeta.id) {
+            throw new Error('Valid sheet reference is required for highlightCells.');
+          }
+
+          const range = parsedArgs.range;
+          const column = parsedArgs.column;
+          const values = parsedArgs.values;
+
+          // Validate that either range OR (column + values) is provided
+          if (!range && !(column && values)) {
+            throw new Error('Either "range" (e.g., "A1") or "column" + "values" (e.g., column: "grade", values: [28, 7]) is required for highlightCells.');
+          }
+          if (range && (column || values)) {
+            throw new Error('Cannot specify both "range" and "column/values" - use one approach only.');
+          }
+
+          const color = parsedArgs.color || 'yellow';
+          const message = parsedArgs.message || null;
+
+          const validColors = ['yellow', 'red', 'green', 'blue', 'orange', 'purple'];
+          const finalColor = validColors.includes(color.toLowerCase()) ? color.toLowerCase() : 'yellow';
+
+          toolResultPayload = {
+            ok: true,
+            sheetId: sheetMeta.id,
+            sheetName: sheetMeta.name,
+            range: range ? range.trim() : undefined,
+            column: column || undefined,
+            values: values || undefined,
+            color: finalColor,
+            message: message,
+            sheetReference: sheetReferenceLabel,
+          };
+
+          toolCallRecord = {
+            name: callName,
+            kind: 'highlight',
+            sheetId: sheetMeta.id,
+            sheetName: sheetMeta.name,
+            range: range ? range.trim() : undefined,
+            column: column || undefined,
+            values: values || undefined,
+            color: finalColor,
+            message: message,
+            status: 'ok',
+            reference: sheetReferenceLabel,
+          };
         } else {
           throw new Error(`Unsupported function call: ${callName}`);
         }
+
+        logToFile('gemini-tool-success', {
+          iteration,
+          callName,
+          result: toolResultPayload
+        });
       } catch (toolError) {
+        logToFile('gemini-tool-error', {
+          iteration,
+          callName,
+          error: toolError instanceof Error ? toolError.message : String(toolError),
+          stack: toolError instanceof Error ? toolError.stack : undefined
+        });
         const isMutation = callName === 'mutateSheetSql';
+        const isHighlight = callName === 'highlightCells';
         toolResultPayload = {
           ok: false,
           sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
           sheetReference: sheetReferenceLabel,
-          error: toolError instanceof Error ? toolError.message : 'SQL execution failed.',
+          error: toolError instanceof Error ? toolError.message : (isHighlight ? 'Highlight failed.' : 'SQL execution failed.'),
         };
 
         toolCallRecord = {
           name: callName,
-          kind: isMutation ? 'write' : 'read',
+          kind: isHighlight ? 'highlight' : (isMutation ? 'write' : 'read'),
           sheetId: sheetMeta?.id,
           sheetName: sheetMeta?.name,
-          sql: trimmedSql,
+          sql: isHighlight ? undefined : trimmedSql,
+          range: isHighlight ? parsedArgs.range : undefined,
           status: 'error',
-          operation: isMutation ? undefined : 'select',
+          operation: isHighlight ? undefined : (isMutation ? undefined : 'select'),
           error: toolError instanceof Error ? toolError.message : String(toolError),
           reference: sheetReferenceLabel,
         };
@@ -1253,6 +1447,14 @@ const buildRequestPayload = (conversationContents) => ({
       toolCalls.length > 0 ? toolCalls : null
     );
 
+    logToFile('gemini-final', {
+      spreadsheetId: req.params.id,
+      userQuery: trimmedQuery,
+      assistantText,
+      toolCalls,
+      iterations: iteration
+    });
+
     const messages = listChatMessages(req.params.id);
     res.json({
       response: assistantMessage.content,
@@ -1260,7 +1462,11 @@ const buildRequestPayload = (conversationContents) => ({
       messages,
     });
   } catch (error) {
-    console.error('Gemini chat request failed', error);
+    logToFile('gemini-error', {
+      spreadsheetId: req.params.id,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     res.status(500).json({ error: 'Failed to generate response.' });
   }
 });

@@ -33,7 +33,7 @@ export interface ToolCallRecord {
   truncated?: boolean;
   columns?: string[];
   error?: string;
-  kind?: 'read' | 'write';
+  kind?: 'read' | 'write' | 'highlight';
   operation?: 'select' | 'update' | 'insert' | 'alter';
   changes?: number;
   lastInsertRowid?: number | string;
@@ -42,6 +42,11 @@ export interface ToolCallRecord {
     sqlName: string;
     columnIndex: number;
   }[];
+  range?: string;
+  column?: string;
+  values?: (string | number | boolean | null)[];
+  color?: string;
+  message?: string | null;
 }
 
 export interface ChatMessage {
@@ -52,6 +57,15 @@ export interface ChatMessage {
   created_at: string;
   context_range?: string | null;
   tool_calls?: ToolCallRecord[] | null;
+}
+
+export interface CellHighlight {
+  sheetId: string;
+  range?: string;
+  column?: string;
+  values?: (string | number | boolean | null)[];
+  color: string;
+  message?: string | null;
 }
 
 export interface DataClient {

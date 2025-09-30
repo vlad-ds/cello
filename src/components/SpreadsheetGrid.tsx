@@ -3,6 +3,7 @@ import { Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Cell } from "./Cell";
 import { SheetData, CellSelection } from "@/pages/Index";
+import { CellHighlight } from "@/integrations/database";
 
 interface SpreadsheetGridProps {
   sheet: SheetData;
@@ -21,6 +22,7 @@ interface SpreadsheetGridProps {
   onRowResize: (rowIndex: number, height: number) => void;
   getColumnWidth: (colIndex: number) => number;
   getRowHeight: (rowIndex: number) => number;
+  highlight?: CellHighlight | null;
 }
 
 export const SpreadsheetGrid = ({
@@ -40,6 +42,7 @@ export const SpreadsheetGrid = ({
   onRowResize,
   getColumnWidth,
   getRowHeight,
+  highlight,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSelectingColumns, setIsSelectingColumns] = useState(false);
@@ -56,6 +59,91 @@ export const SpreadsheetGrid = ({
 
   const ROWS = rowCount;
   const COLS = sheet.columnHeaders.length;
+
+  // Helper to convert column index to letter (0 -> A, 1 -> B, etc.)
+  const colToLetter = (col: number): string => {
+    let letter = '';
+    let num = col;
+    while (num >= 0) {
+      letter = String.fromCharCode((num % 26) + 65) + letter;
+      num = Math.floor(num / 26) - 1;
+    }
+    return letter;
+  };
+
+  // Helper to convert column letter to index (A -> 0, B -> 1, etc.)
+  const letterToCol = (letter: string): number => {
+    let col = 0;
+    for (let i = 0; i < letter.length; i++) {
+      col = col * 26 + (letter.charCodeAt(i) - 64);
+    }
+    return col - 1;
+  };
+
+  // Check if a cell is in the highlighted range
+  const isCellHighlighted = (row: number, col: number): boolean => {
+    if (!highlight) return false;
+
+    // Value-based highlighting
+    if (highlight.column && highlight.values) {
+      // Find which column index corresponds to the SQL column name
+      const columnIndex = sheet.columnHeaders.findIndex(
+        header => header.toLowerCase() === highlight.column?.toLowerCase()
+      );
+
+      // Only highlight cells in the matching column
+      if (columnIndex === -1 || col !== columnIndex) {
+        return false;
+      }
+
+      // Get the cell value at this position
+      const cellValue = sheet.cells[`${row}-${col}`] || "";
+      // Compare against highlight values (need to handle type conversion)
+      return highlight.values.some(v => {
+        // Handle numeric comparisons
+        if (typeof v === 'number') {
+          const numValue = parseFloat(cellValue);
+          return !isNaN(numValue) && numValue === v;
+        }
+        // Handle string/null/boolean comparisons
+        return String(v) === cellValue;
+      });
+    }
+
+    // Range-based highlighting
+    if (!highlight.range) return false;
+    const range = highlight.range.trim().toUpperCase();
+
+    // Single cell (e.g., "A1")
+    if (!range.includes(':')) {
+      const match = range.match(/^([A-Z]+)(\d+)$/);
+      if (!match) return false;
+      const [, colLetter, rowStr] = match;
+      const targetRow = parseInt(rowStr, 10) - 1; // A1 = rowIndex 0
+      const targetCol = letterToCol(colLetter);
+      return row === targetRow && col === targetCol;
+    }
+
+    // Range (e.g., "A1:B5")
+    const parts = range.split(':');
+    if (parts.length !== 2) return false;
+
+    const start = parts[0].match(/^([A-Z]+)(\d+)$/);
+    const end = parts[1].match(/^([A-Z]+)(\d+)$/);
+    if (!start || !end) return false;
+
+    const startCol = letterToCol(start[1]);
+    const startRow = parseInt(start[2], 10) - 1; // Convert to zero-indexed
+    const endCol = letterToCol(end[1]);
+    const endRow = parseInt(end[2], 10) - 1; // Convert to zero-indexed
+
+    const minRow = Math.min(startRow, endRow);
+    const maxRow = Math.max(startRow, endRow);
+    const minCol = Math.min(startCol, endCol);
+    const maxCol = Math.max(startCol, endCol);
+
+    return row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
+  };
 
   const handleCellMouseDown = (row: number, col: number) => {
     setIsSelecting(true);
@@ -442,6 +530,8 @@ export const SpreadsheetGrid = ({
                 onSelectionChange={onSelectionChange}
                 selection={selection}
                 ROWS={ROWS}
+                isHighlighted={isCellHighlighted(rowIndex, colIndex)}
+                highlightColor={highlight?.color}
               />
             ))}
           </div>
