@@ -916,9 +916,9 @@ const handleAnthropicChat = async (req, res, context) => {
     'You have access to six tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), and filter_clear (to remove filters).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
-    'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
-    'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(column: "grade", values: [28], color: "green") then highlights_add(column: "grade", values: [4], color: "red").',
-    'For data-based highlighting: Query with executeSheetSql to get the values, then use highlights_add with column/values. Example: To highlight highest and lowest grades in different colors, SELECT the values, then call highlights_add twice with different colors.',
+    'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
+    'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
+    'For data-based highlighting: Query with executeSheetSql to analyze data, then use highlights_add with a condition. Example: To highlight highest and lowest grades in different colors, query for thresholds, then call highlights_add twice with different conditions and colors.',
     'Use `highlights_clear` to remove all active highlights from the spreadsheet.',
     'Use `filter_add` to show only rows that match a SQL boolean condition (other rows are hidden). Provide a WHERE clause expression. Filters persist and can be layered (multiple filters create AND conditions). Examples: filter_add(sheet: context.spreadsheet.sheets["Sales"], condition: \'"revenue" > 1000\'), or filter_add(condition: \'"status" = \\\'active\\\' AND "revenue" > 5000\').',
     'Use `filter_clear` to remove all active filters from a sheet and show all rows again.',
@@ -1014,25 +1014,12 @@ const handleAnthropicChat = async (req, res, context) => {
           range: {
             type: 'string',
             description:
-              'Cell range to highlight in A1 notation (e.g., "A1", "B2:D5", "A1:A10"). Use this for specific cell locations. Mutually exclusive with column/values.',
+              'Cell range to highlight in A1 notation (e.g., "A1", "B2:D5", "A1:A10"). Use this for specific cell locations. Mutually exclusive with condition.',
           },
-          column: {
+          condition: {
             type: 'string',
             description:
-              'Column name (SQL column name like "grade") to search for matching values. Use with "values" parameter. Mutually exclusive with range.',
-          },
-          values: {
-            type: 'array',
-            items: {
-              oneOf: [
-                { type: 'string' },
-                { type: 'number' },
-                { type: 'boolean' },
-                { type: 'null' }
-              ]
-            },
-            description:
-              'Array of values to highlight in the specified column. All cells in the column matching these values will be highlighted. Use with "column" parameter.',
+              'SQL boolean expression defining which cells to highlight. Use double quotes for column names. Examples: \'"grade" > 20\', \'"status" = \\\'active\\\'\', \'"revenue" BETWEEN 1000 AND 5000\'. Mutually exclusive with range.',
           },
           color: {
             type: 'string',
@@ -1289,14 +1276,26 @@ const handleAnthropicChat = async (req, res, context) => {
             }
 
             const range = toolInput.range;
-            const column = toolInput.column;
-            const values = toolInput.values;
+            const condition = toolInput.condition;
 
-            if (!range && !(column && values)) {
-              throw new Error('Either "range" or "column" + "values" is required for highlights_add.');
+            if (!range && !condition) {
+              throw new Error('Either "range" or "condition" is required for highlights_add.');
             }
-            if (range && (column || values)) {
-              throw new Error('Cannot specify both "range" and "column/values".');
+            if (range && condition) {
+              throw new Error('Cannot specify both "range" and "condition".');
+            }
+
+            let rowNumbers = undefined;
+            // Execute condition to get matching row numbers
+            if (condition) {
+              const tableName = tableNameForSheet(sheetMeta.id);
+              const querySql = `SELECT row_number FROM "${tableName}" WHERE ${condition}`;
+              try {
+                const rows = readOnlyDb.prepare(querySql).all();
+                rowNumbers = rows.map(row => row.row_number);
+              } catch (sqlError) {
+                throw new Error(`Invalid highlight condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
+              }
             }
 
             const color = toolInput.color || 'yellow';
@@ -1310,8 +1309,8 @@ const handleAnthropicChat = async (req, res, context) => {
               sheetId: sheetMeta.id,
               sheetName: sheetMeta.name,
               range: range ? range.trim() : undefined,
-              column: column || undefined,
-              values: values || undefined,
+              condition: condition ? condition.trim() : undefined,
+              rowNumbers: rowNumbers,
               color: finalColor,
               message: message,
             });
@@ -1322,8 +1321,8 @@ const handleAnthropicChat = async (req, res, context) => {
               sheetId: sheetMeta.id,
               sheetName: sheetMeta.name,
               range: range ? range.trim() : undefined,
-              column: column || undefined,
-              values: values || undefined,
+              condition: condition ? condition.trim() : undefined,
+              rowNumbers: rowNumbers,
               color: finalColor,
               message: message,
               status: 'ok',
@@ -1588,9 +1587,9 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     'You have access to four functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
     'Use `mutateSheetSql` only when the user explicitly asks to change spreadsheet data (for example, updating column values, adding rows, or creating a new column). Mutations are limited to UPDATE, INSERT, or ALTER TABLE ... ADD COLUMN statements.',
-    'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "column" + "values" to highlight all cells in a column matching specific values (e.g., column: "grade", values: [28, 7]).',
-    'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(column: "grade", values: [28], color: "green") then highlights_add(column: "grade", values: [4], color: "red").',
-    'For data-based highlighting: Query with executeSheetSql to get the values, then use highlights_add with column/values. Example: To highlight highest and lowest grades in different colors, SELECT the values, then call highlights_add twice with different colors.',
+    'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
+    'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
+    'For data-based highlighting: Query with executeSheetSql to analyze data, then use highlights_add with a condition. Example: To highlight highest and lowest grades in different colors, query for thresholds, then call highlights_add twice with different conditions and colors.',
     'Use `highlights_clear` to remove all active highlights from the spreadsheet.',
     'IMPORTANT: When passing function parameters, ensure all string values are properly escaped. Do not include unescaped quotes or special characters in function parameters. Keep parameter content concise to avoid exceeding token limits.',
     'If a function call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
@@ -1684,18 +1683,12 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
               range: {
                 type: 'string',
                 description:
-                  'Cell range to highlight in A1 notation (e.g., "A1", "B2:D5", "A1:A10"). Use this for specific cell locations. Mutually exclusive with column/values.',
+                  'Cell range to highlight in A1 notation (e.g., "A1", "B2:D5", "A1:A10"). Use this for specific cell locations. Mutually exclusive with condition.',
               },
-              column: {
+              condition: {
                 type: 'string',
                 description:
-                  'Column name (SQL column name like "grade") to search for matching values. Use with "values" parameter. Mutually exclusive with range.',
-              },
-              values: {
-                type: 'array',
-                items: {},
-                description:
-                  'Array of values to highlight in the specified column. All cells in the column matching these values will be highlighted. Use with "column" parameter. Can contain strings, numbers, booleans, or null.',
+                  'SQL boolean expression defining which cells to highlight. Use double quotes for column names. Examples: \'"grade" > 20\', \'"status" = \\\'active\\\'\', \'"revenue" BETWEEN 1000 AND 5000\'. Mutually exclusive with range.',
               },
               color: {
                 type: 'string',
@@ -1974,15 +1967,26 @@ const buildRequestPayload = (conversationContents) => ({
           }
 
           const range = parsedArgs.range;
-          const column = parsedArgs.column;
-          const values = parsedArgs.values;
+          const condition = parsedArgs.condition;
 
-          // Validate that either range OR (column + values) is provided
-          if (!range && !(column && values)) {
-            throw new Error('Either "range" (e.g., "A1") or "column" + "values" (e.g., column: "grade", values: [28, 7]) is required for highlights_add.');
+          if (!range && !condition) {
+            throw new Error('Either "range" or "condition" is required for highlights_add.');
           }
-          if (range && (column || values)) {
-            throw new Error('Cannot specify both "range" and "column/values" - use one approach only.');
+          if (range && condition) {
+            throw new Error('Cannot specify both "range" and "condition".');
+          }
+
+          let rowNumbers = undefined;
+          // Execute condition to get matching row numbers
+          if (condition) {
+            const tableName = tableNameForSheet(sheetMeta.id);
+            const querySql = `SELECT row_number FROM "${tableName}" WHERE ${condition}`;
+            try {
+              const rows = readOnlyDb.prepare(querySql).all();
+              rowNumbers = rows.map(row => row.row_number);
+            } catch (sqlError) {
+              throw new Error(`Invalid highlight condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
+            }
           }
 
           const color = parsedArgs.color || 'yellow';
@@ -1996,8 +2000,8 @@ const buildRequestPayload = (conversationContents) => ({
             sheetId: sheetMeta.id,
             sheetName: sheetMeta.name,
             range: range ? range.trim() : undefined,
-            column: column || undefined,
-            values: values || undefined,
+            condition: condition ? condition.trim() : undefined,
+            rowNumbers: rowNumbers,
             color: finalColor,
             message: message,
             sheetReference: sheetReferenceLabel,
@@ -2009,8 +2013,8 @@ const buildRequestPayload = (conversationContents) => ({
             sheetId: sheetMeta.id,
             sheetName: sheetMeta.name,
             range: range ? range.trim() : undefined,
-            column: column || undefined,
-            values: values || undefined,
+            condition: condition ? condition.trim() : undefined,
+            rowNumbers: rowNumbers,
             color: finalColor,
             message: message,
             status: 'ok',
@@ -2063,6 +2067,7 @@ const buildRequestPayload = (conversationContents) => ({
           sheetName: sheetMeta?.name,
           sql: (isHighlight || isHighlightClear) ? undefined : trimmedSql,
           range: isHighlight ? parsedArgs.range : undefined,
+          condition: isHighlight ? parsedArgs.condition : undefined,
           status: 'error',
           operation: (isHighlight || isHighlightClear) ? undefined : (isMutation ? undefined : 'select'),
           error: toolError instanceof Error ? toolError.message : String(toolError),

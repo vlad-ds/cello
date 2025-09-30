@@ -43,8 +43,8 @@ interface ToolCall {
     columnIndex: number;
   }[];
   range?: string;
-  column?: string;
-  values?: (string | number | boolean | null)[];
+  condition?: string;
+  rowNumbers?: number[];
   color?: string;
   message?: string | null;
 }
@@ -379,7 +379,8 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                     'bg-yellow-400'
                   }`} />
                   <span className="text-xs text-muted-foreground">
-                    {highlight.range || `${highlight.column}: ${highlight.values?.join(', ')}`}
+                    {highlight.range || (highlight.condition ? `condition: ${highlight.condition}` : 'unknown')}
+                    {highlight.rowNumbers && ` (${highlight.rowNumbers.length} row${highlight.rowNumbers.length !== 1 ? 's' : ''})`}
                     {highlight.message && ` - ${highlight.message}`}
                   </span>
                 </div>
@@ -505,7 +506,8 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                                 <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
                                   <Sparkles className="h-4 w-4" />
                                   <span>
-                                    Highlighted cells {toolCall.range || `${toolCall.column}: ${toolCall.values?.join(', ')}`}
+                                    Highlighted cells {toolCall.range || (toolCall.condition ? `where ${toolCall.condition}` : 'unknown')}
+                                    {toolCall.rowNumbers && ` (${toolCall.rowNumbers.length} row${toolCall.rowNumbers.length !== 1 ? 's' : ''})`}
                                     {toolCall.sheetName
                                       ? ` in ${toolCall.sheetName}`
                                       : toolCall.sheetId

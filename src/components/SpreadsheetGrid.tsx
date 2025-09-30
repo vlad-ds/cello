@@ -85,29 +85,12 @@ export const SpreadsheetGrid = ({
   // Check if a cell is in any highlighted range and return the color
   const getCellHighlightColor = (row: number, col: number): string | null => {
     for (const highlight of highlights) {
-      // Value-based highlighting
-      if (highlight.column && highlight.values) {
-        // Find which column index corresponds to the SQL column name
-        const columnIndex = sheet.columnHeaders.findIndex(
-          header => header.toLowerCase() === highlight.column?.toLowerCase()
-        );
-
-        // Only highlight cells in the matching column
-        if (columnIndex !== -1 && col === columnIndex) {
-          // Get the cell value at this position
-          const cellValue = sheet.cells[`${row}-${col}`] || "";
-          // Compare against highlight values (need to handle type conversion)
-          const matches = highlight.values.some(v => {
-            // Handle numeric comparisons
-            if (typeof v === 'number') {
-              const numValue = parseFloat(cellValue);
-              return !isNaN(numValue) && numValue === v;
-            }
-            // Handle string/null/boolean comparisons
-            return String(v) === cellValue;
-          });
-
-          if (matches) return highlight.color;
+      // Row-based highlighting (from SQL condition)
+      if (highlight.rowNumbers && highlight.rowNumbers.length > 0) {
+        // rowNumbers are converted to 0-based indices in SpreadsheetView before storing
+        // row parameter here is actualRow which is also 0-based (frontend row index)
+        if (highlight.rowNumbers.includes(row)) {
+          return highlight.color;
         }
       }
 

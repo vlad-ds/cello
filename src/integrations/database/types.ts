@@ -70,8 +70,8 @@ export interface ChatMessage {
 export interface CellHighlight {
   sheetId: string;
   range?: string;
-  column?: string;
-  values?: (string | number | boolean | null)[];
+  condition?: string;
+  rowNumbers?: number[];
   color: string;
   message?: string | null;
 }

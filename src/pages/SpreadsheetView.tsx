@@ -656,12 +656,13 @@ const SpreadsheetView = () => {
     const highlightCalls = toolCalls.filter(call => call?.kind === 'highlight' && call.status === 'ok');
     if (hasClear || highlightCalls.length > 0) {
       const newHighlights = highlightCalls
-        .filter(call => call.sheetId && (call.range || (call.column && call.values)))
+        .filter(call => call.sheetId && (call.range || (call.condition && call.rowNumbers)))
         .map(call => ({
           sheetId: call.sheetId!,
           range: call.range,
-          column: call.column,
-          values: call.values,
+          condition: call.condition,
+          // Convert 1-based row_numbers from backend to 0-based row indices for frontend
+          rowNumbers: call.rowNumbers?.map(n => n - 1),
           color: call.color || 'yellow',
           message: call.message || null,
         }));
