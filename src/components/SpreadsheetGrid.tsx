@@ -26,6 +26,7 @@ interface SpreadsheetGridProps {
   highlights?: CellHighlight[];
   displayRowNumbers?: number[];
   onFillRequest?: (sourceRange: string, targetRange: string, sourceData: string[][], skipConfirmation: boolean) => void;
+  onAIPromptRequest?: (targetCell: string, prompt: string, selectedRange?: string) => void;
 }
 
 export const SpreadsheetGrid = ({
@@ -48,6 +49,7 @@ export const SpreadsheetGrid = ({
   highlights = [],
   displayRowNumbers,
   onFillRequest,
+  onAIPromptRequest,
 }: SpreadsheetGridProps) => {
   const [isSelecting, setIsSelecting] = useState(false);
   const [isSelectingColumns, setIsSelectingColumns] = useState(false);
@@ -63,9 +65,21 @@ export const SpreadsheetGrid = ({
   const [isFilling, setIsFilling] = useState(false);
   const [fillPreview, setFillPreview] = useState<{ minRow: number; maxRow: number; minCol: number; maxCol: number } | null>(null);
   const [skipConfirmation, setSkipConfirmation] = useState(false);
+  const [aiPromptMode, setAiPromptMode] = useState<{ row: number; col: number; prompt: string; selectedRange?: CellSelection } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fillHandleRef = useRef<HTMLDivElement>(null);
+  const aiPromptInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const aiPromptModeRef = useRef(aiPromptMode);
+  const selectionRef = useRef(selection);
+
+  useEffect(() => {
+    aiPromptModeRef.current = aiPromptMode;
+  }, [aiPromptMode]);
+
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
 
   const ROWS = rowCount;
   const COLS = sheet.columnHeaders.length;
@@ -626,7 +640,24 @@ export const SpreadsheetGrid = ({
   const handleCellEdit = useCallback((row: number, col: number, value: string) => {
     onCellUpdate(row, col, value);
     setEditingCell(null);
+    setAiPromptMode(null);
   }, [onCellUpdate]);
+
+  const handleAIPromptChange = useCallback((row: number, col: number, prompt: string) => {
+    if (prompt.startsWith('=')) {
+      // Store the current selection as the selected range
+      setAiPromptMode({
+        row,
+        col,
+        prompt,
+        selectedRange: selection.type === 'cell' && (selection.start.row !== row || selection.start.col !== col)
+          ? selection
+          : undefined
+      });
+    } else {
+      setAiPromptMode(null);
+    }
+  }, [selection]);
 
   const handleHeaderEdit = useCallback((_: number, colIndex: number, value: string) => {
     onColumnHeaderUpdate(colIndex, value);
@@ -647,6 +678,16 @@ export const SpreadsheetGrid = ({
     return row >= fillPreview.minRow && row <= fillPreview.maxRow &&
            col >= fillPreview.minCol && col <= fillPreview.maxCol &&
            !isCellSelected(row, col); // Only show preview for new cells
+  };
+
+  const isCellInAIPromptRange = (row: number, col: number) => {
+    if (!aiPromptMode?.selectedRange) return false;
+    const { start, end } = aiPromptMode.selectedRange;
+    const minRow = Math.min(start.row, end.row);
+    const maxRow = Math.max(start.row, end.row);
+    const minCol = Math.min(start.col, end.col);
+    const maxCol = Math.max(start.col, end.col);
+    return row >= minRow && row <= maxRow && col >= minCol && col <= maxCol;
   };
 
   const getSelectionBorderClasses = (row: number, col: number) => {
@@ -769,12 +810,156 @@ export const SpreadsheetGrid = ({
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    // Don't interfere if someone is editing a sheet name
-    if (editingHeader !== null || document.querySelector('input:focus, textarea:focus')) {
+    // Handle Escape in AI prompt mode (even when not in the input)
+    // This must be checked BEFORE other conditions to work globally
+    const currentAIPromptMode = aiPromptModeRef.current;
+    if (currentAIPromptMode && e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function") {
+        e.stopImmediatePropagation();
+      }
+
+      const { row, col } = currentAIPromptMode;
+      if (aiPromptInputRef.current) {
+        aiPromptInputRef.current.blur();
+      }
+
+      setEditingCell(null);
+      aiPromptModeRef.current = null;
+      setAiPromptMode(null);
+
+      const currentSelection = selectionRef.current;
+      const isSameCell =
+        currentSelection?.start.row === row &&
+        currentSelection?.start.col === col &&
+        currentSelection?.end.row === row &&
+        currentSelection?.end.col === col;
+
+      if (!isSameCell) {
+        const nextSelection: CellSelection = {
+          start: { row, col },
+          end: { row, col },
+          type: 'cell'
+        };
+        selectionRef.current = nextSelection;
+        onSelectionChange(nextSelection);
+      }
       return;
     }
-    
-    if (editingCell) return;
+
+    // Don't interfere if someone is editing a sheet name
+    if (editingHeader !== null || document.querySelector('input:focus, textarea:focus')) {
+      // Handle Enter in AI prompt mode
+      if (aiPromptMode && e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        // Trigger AI prompt dialog
+        if (onAIPromptRequest) {
+          const targetCell = `${colToLetter(aiPromptMode.col)}${aiPromptMode.row + 1}`;
+          let selectedRange = undefined;
+
+          if (aiPromptMode.selectedRange) {
+            const { start, end } = aiPromptMode.selectedRange;
+            const minRow = Math.min(start.row, end.row);
+            const maxRow = Math.max(start.row, end.row);
+            const minCol = Math.min(start.col, end.col);
+            const maxCol = Math.max(start.col, end.col);
+            selectedRange = `${colToLetter(minCol)}${minRow + 1}:${colToLetter(maxCol)}${maxRow + 1}`;
+          }
+
+          // Remove the '=' from the prompt
+          const promptText = aiPromptMode.prompt.slice(1);
+          onAIPromptRequest(targetCell, promptText, selectedRange);
+        }
+        setEditingCell(null);
+        setAiPromptMode(null);
+        return;
+      }
+      // Escape handling is done above, before this check
+      return;
+    }
+
+    // Skip keyboard navigation if editing a cell (but not in AI prompt mode)
+    if (editingCell && !aiPromptMode) return;
+
+    // In AI prompt mode, route typing to the prompt input
+    if (aiPromptMode && aiPromptInputRef.current && !aiPromptInputRef.current.matches(':focus')) {
+      // Handle printable characters
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        const textarea = aiPromptInputRef.current;
+        textarea.focus();
+        // Insert character at cursor position
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const currentValue = textarea.value;
+        const newValue = currentValue.substring(0, start) + e.key + currentValue.substring(end);
+        textarea.value = newValue;
+        textarea.selectionStart = textarea.selectionEnd = start + 1;
+        // Trigger the change event
+        const event = new Event('input', { bubbles: true });
+        textarea.dispatchEvent(event);
+        return;
+      }
+
+      // Handle Backspace
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        const textarea = aiPromptInputRef.current;
+        textarea.focus();
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const currentValue = textarea.value;
+
+        if (start === end && start > 0) {
+          // Delete one character before cursor
+          const newValue = currentValue.substring(0, start - 1) + currentValue.substring(end);
+          textarea.value = newValue;
+          textarea.selectionStart = textarea.selectionEnd = start - 1;
+        } else if (start !== end) {
+          // Delete selection
+          const newValue = currentValue.substring(0, start) + currentValue.substring(end);
+          textarea.value = newValue;
+          textarea.selectionStart = textarea.selectionEnd = start;
+        }
+
+        // Trigger the change event
+        const event = new Event('input', { bubbles: true });
+        textarea.dispatchEvent(event);
+
+        // If empty after delete, exit AI prompt mode
+        if (textarea.value.length === 0) {
+          setAiPromptMode(null);
+          setEditingCell(null);
+        }
+        return;
+      }
+
+      // Handle Enter
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        // Trigger AI prompt dialog (same logic as before)
+        if (onAIPromptRequest) {
+          const targetCell = `${colToLetter(aiPromptMode.col)}${aiPromptMode.row + 1}`;
+          let selectedRange = undefined;
+
+          if (aiPromptMode.selectedRange) {
+            const { start, end } = aiPromptMode.selectedRange;
+            const minRow = Math.min(start.row, end.row);
+            const maxRow = Math.max(start.row, end.row);
+            const minCol = Math.min(start.col, end.col);
+            const maxCol = Math.max(start.col, end.col);
+            selectedRange = `${colToLetter(minCol)}${minRow + 1}:${colToLetter(maxCol)}${maxRow + 1}`;
+          }
+
+          const promptText = aiPromptMode.prompt.slice(1);
+          onAIPromptRequest(targetCell, promptText, selectedRange);
+        }
+        setEditingCell(null);
+        setAiPromptMode(null);
+        return;
+      }
+    }
 
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
       e.preventDefault();
@@ -827,11 +1012,11 @@ export const SpreadsheetGrid = ({
     }
 
     onSelectionChange({ start: { row: newRow, col: newCol }, end: { row: newRow, col: newCol }, type: 'cell' });
-  }, [selection, editingCell, editingHeader, onSelectionChange, onCellUpdate, ROWS, COLS, copySelectionToClipboard]);
+  }, [selection, editingCell, editingHeader, onSelectionChange, onCellUpdate, ROWS, COLS, copySelectionToClipboard, aiPromptMode, onAIPromptRequest, colToLetter]);
 
   useEffect(() => {
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, [handleKeyDown]);
 
   // Scroll active cell into view when selection changes
@@ -888,6 +1073,24 @@ export const SpreadsheetGrid = ({
     document.addEventListener("mouseup", handleDocumentMouseUp);
     return () => document.removeEventListener("mouseup", handleDocumentMouseUp);
   }, []);
+
+  // Update AI prompt mode selected range when selection changes
+  useEffect(() => {
+    if (aiPromptMode && selection.type === 'cell') {
+      // Check if selection is different from AI prompt cell
+      const isDifferentCell = selection.start.row !== aiPromptMode.row ||
+                             selection.start.col !== aiPromptMode.col ||
+                             selection.end.row !== aiPromptMode.row ||
+                             selection.end.col !== aiPromptMode.col;
+
+      if (isDifferentCell) {
+        setAiPromptMode({
+          ...aiPromptMode,
+          selectedRange: selection
+        });
+      }
+    }
+  }, [selection, aiPromptMode]);
 
   // Clear text selection when exiting edit mode
   useEffect(() => {
@@ -1035,6 +1238,7 @@ export const SpreadsheetGrid = ({
               {Array.from({ length: COLS }, (_, colIndex) => {
                 const actualRow = displayRowNumbers ? displayRowNumbers[rowIndex] : rowIndex;
                 const highlightColor = getCellHighlightColor(actualRow, colIndex);
+                const isAIPromptCell = aiPromptMode?.row === rowIndex && aiPromptMode?.col === colIndex;
                 return (
                   <Cell
                     key={`${rowIndex}-${colIndex}`}
@@ -1056,6 +1260,10 @@ export const SpreadsheetGrid = ({
                     isHighlighted={!!highlightColor}
                     highlightColor={highlightColor || undefined}
                     isInFillPreview={isCellInFillPreview(rowIndex, colIndex)}
+                    isAIPromptMode={isAIPromptCell}
+                    isInAIPromptRange={isCellInAIPromptRange(rowIndex, colIndex)}
+                    onAIPromptChange={handleAIPromptChange}
+                    aiPromptInputRef={isAIPromptCell ? aiPromptInputRef : undefined}
                   />
                 );
               })}
@@ -1106,6 +1314,7 @@ export const SpreadsheetGrid = ({
               {Array.from({ length: COLS }, (_, colIndex) => {
                 const actualRow = displayRowNumbers ? displayRowNumbers[rowIndex] : rowIndex;
                 const highlightColor = getCellHighlightColor(actualRow, colIndex);
+                const isAIPromptCell = aiPromptMode?.row === rowIndex && aiPromptMode?.col === colIndex;
                 return (
                   <Cell
                     key={`${rowIndex}-${colIndex}`}
@@ -1127,6 +1336,10 @@ export const SpreadsheetGrid = ({
                     isHighlighted={!!highlightColor}
                     highlightColor={highlightColor || undefined}
                     isInFillPreview={isCellInFillPreview(rowIndex, colIndex)}
+                    isAIPromptMode={isAIPromptCell}
+                    isInAIPromptRange={isCellInAIPromptRange(rowIndex, colIndex)}
+                    onAIPromptChange={handleAIPromptChange}
+                    aiPromptInputRef={isAIPromptCell ? aiPromptInputRef : undefined}
                   />
                 );
               })}

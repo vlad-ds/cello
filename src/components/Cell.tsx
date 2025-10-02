@@ -21,6 +21,10 @@ interface CellProps {
   isHighlighted?: boolean;
   highlightColor?: string;
   isInFillPreview?: boolean;
+  isAIPromptMode?: boolean;
+  isInAIPromptRange?: boolean;
+  onAIPromptChange?: (row: number, col: number, prompt: string) => void;
+  aiPromptInputRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 const CellComponent = ({
@@ -43,9 +47,14 @@ const CellComponent = ({
   isHighlighted = false,
   highlightColor = 'yellow',
   isInFillPreview = false,
+  isAIPromptMode = false,
+  isInAIPromptRange = false,
+  onAIPromptChange,
+  aiPromptInputRef,
 }: CellProps) => {
   const [editValue, setEditValue] = useState(value);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const localInputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = aiPromptInputRef && isAIPromptMode ? aiPromptInputRef : localInputRef;
   const isSubmittingRef = useRef(false);
 
   useEffect(() => {
@@ -72,7 +81,32 @@ const CellComponent = ({
     }, 10);
   };
 
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newValue = e.target.value;
+    setEditValue(newValue);
+
+    // Detect AI prompt mode when first character is '='
+    if (newValue.length === 1 && newValue === '=' && !isHeader && onAIPromptChange) {
+      onAIPromptChange(rowIndex ?? -1, colIndex ?? -1, newValue);
+    } else if (isAIPromptMode && onAIPromptChange) {
+      onAIPromptChange(rowIndex ?? -1, colIndex ?? -1, newValue);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // In AI prompt mode, Enter triggers the AI prompt dialog instead of submitting
+    if (isAIPromptMode && e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      // The parent will handle showing the AI prompt dialog
+      return;
+    }
+
+    // In AI prompt mode, Escape exits the mode (handled by parent grid)
+    if (isAIPromptMode && e.key === "Escape") {
+      // Don't preventDefault - let it bubble to parent
+      return;
+    }
+
     if (e.key === "Enter") {
       e.preventDefault();
       handleSubmit();
@@ -96,6 +130,10 @@ const CellComponent = ({
       setEditValue(value);
       onEdit?.(rowIndex ?? -1, colIndex ?? -1, value);
     } else if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      // In AI prompt mode, allow arrow keys for text navigation
+      if (isAIPromptMode) {
+        return;
+      }
       // Exit editing mode when arrow keys are pressed
       e.preventDefault();
       handleSubmit();
@@ -121,10 +159,12 @@ const CellComponent = ({
   const cellClassName = cn(
     "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell overflow-hidden relative pointer-events-auto",
     isHeader && "bg-grid-header text-grid-header-foreground font-medium cursor-text items-center",
-    !isHeader && !isHighlighted && !isInFillPreview && "bg-grid hover:bg-grid-hover",
+    !isHeader && !isHighlighted && !isInFillPreview && !isAIPromptMode && !isInAIPromptRange && "bg-grid hover:bg-grid-hover",
     !isHeader && isHighlighted && getHighlightClasses(),
-    isSelected && !isHeader && "bg-grid-selected z-10",
+    isSelected && !isHeader && !isAIPromptMode && !isInAIPromptRange && "bg-grid-selected z-10",
     isInFillPreview && !isHeader && "bg-primary/10",
+    isAIPromptMode && !isHeader && "bg-purple-100/60 border-purple-400 border-2 z-10",
+    isInAIPromptRange && !isHeader && "bg-orange-100/60 border-dashed border-orange-400 border-2 z-10",
     className
   );
 
@@ -134,8 +174,8 @@ const CellComponent = ({
         <textarea
           ref={inputRef as React.RefObject<HTMLTextAreaElement>}
           value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onBlur={handleSubmit}
+          onChange={handleChange}
+          onBlur={isAIPromptMode ? undefined : handleSubmit}
           onKeyDown={handleKeyDown}
           className="w-full h-full bg-transparent outline-none border-none text-sm resize-none leading-tight py-0"
           onClick={(e) => e.stopPropagation()}
@@ -184,12 +224,16 @@ export const Cell = memo(CellComponent, (prevProps, nextProps) => {
     prevProps.isHighlighted === nextProps.isHighlighted &&
     prevProps.highlightColor === nextProps.highlightColor &&
     prevProps.isInFillPreview === nextProps.isInFillPreview &&
+    prevProps.isAIPromptMode === nextProps.isAIPromptMode &&
+    prevProps.isInAIPromptRange === nextProps.isInAIPromptRange &&
     prevProps.className === nextProps.className &&
     prevProps.onMouseDown === nextProps.onMouseDown &&
     prevProps.onMouseEnter === nextProps.onMouseEnter &&
     prevProps.onDoubleClick === nextProps.onDoubleClick &&
     prevProps.onClick === nextProps.onClick &&
     prevProps.onEdit === nextProps.onEdit &&
+    prevProps.onAIPromptChange === nextProps.onAIPromptChange &&
+    prevProps.aiPromptInputRef === nextProps.aiPromptInputRef &&
     styleEqual
   );
 });

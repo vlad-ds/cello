@@ -9,6 +9,7 @@ import { ChatPanel } from "@/components/ChatPanel";
 import { FileImport } from "@/components/FileImport";
 import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
 import { FillConfirmationDialog } from "@/components/FillConfirmationDialog";
+import { AIPromptDialog } from "@/components/AIPromptDialog";
 import {
   dataClient,
   isSupabaseBackend,
@@ -998,6 +999,11 @@ const SpreadsheetView = () => {
     targetRange: string;
     sourceData: string[][];
   } | null>(null);
+  const [aiPromptDialog, setAiPromptDialog] = useState<{
+    targetCell: string;
+    prompt: string;
+    selectedRange?: string;
+  } | null>(null);
 
   const handleFillRequest = (sourceRange: string, targetRange: string, sourceData: string[][], skipConfirmation: boolean) => {
     if (skipConfirmation) {
@@ -1007,6 +1013,31 @@ const SpreadsheetView = () => {
       // Show confirmation dialog
       setFillConfirmDialog({ sourceRange, targetRange, sourceData });
     }
+  };
+
+  const handleAIPromptRequest = (targetCell: string, prompt: string, selectedRange?: string) => {
+    setAiPromptDialog({ targetCell, prompt, selectedRange });
+  };
+
+  const handleAIPromptConfirm = (prompt: string) => {
+    if (!aiPromptDialog) return;
+
+    let message = `I need help filling cell ${aiPromptDialog.targetCell}.\n\nPrompt: ${prompt}`;
+
+    if (aiPromptDialog.selectedRange) {
+      message += `\n\nSelected range: ${aiPromptDialog.selectedRange}`;
+    }
+
+    // Set the message to be sent to the chat panel
+    setFillRequestMessage(message);
+
+    // Clear dialog and message after a brief delay
+    setAiPromptDialog(null);
+    setTimeout(() => setFillRequestMessage(null), 100);
+  };
+
+  const handleAIPromptCancel = () => {
+    setAiPromptDialog(null);
   };
 
   const handleFillConfirm = (
@@ -1286,6 +1317,7 @@ const SpreadsheetView = () => {
                   getRowHeight={getRowHeight}
                   highlights={activeHighlights.filter(h => h.sheetId === activeSheet.id)}
                   onFillRequest={handleFillRequest}
+                  onAIPromptRequest={handleAIPromptRequest}
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -1344,6 +1376,18 @@ const SpreadsheetView = () => {
           sourceData={fillConfirmDialog.sourceData}
           onConfirm={handleFillConfirm}
           onCancel={handleFillCancel}
+        />
+      )}
+
+      {/* AI Prompt Dialog */}
+      {aiPromptDialog && (
+        <AIPromptDialog
+          open={!!aiPromptDialog}
+          targetCell={aiPromptDialog.targetCell}
+          prompt={aiPromptDialog.prompt}
+          selectedRange={aiPromptDialog.selectedRange}
+          onConfirm={handleAIPromptConfirm}
+          onCancel={handleAIPromptCancel}
         />
       )}
     </div>
