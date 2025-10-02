@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { encode } from 'gpt-tokenizer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +33,62 @@ const logToFile = (category, data) => {
 };
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Token counting utilities
+// Approximate count using GPT-2 tokenizer (fast, local)
+const countTokensApprox = (text) => {
+  if (!text || typeof text !== 'string') return 0;
+  try {
+    const tokens = encode(text);
+    // Add 15% safety margin as proxy for Claude tokenization
+    return Math.ceil(tokens.length * 1.15);
+  } catch (error) {
+    console.error('Token counting error:', error);
+    return 0;
+  }
+};
+
+// Exact count using Anthropic's API (requires API call)
+const countTokensExact = async (text) => {
+  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY not configured');
+  }
+
+  if (!text || typeof text !== 'string') return 0;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        messages: [
+          {
+            role: 'user',
+            content: text,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Anthropic API error: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.input_tokens || 0;
+  } catch (error) {
+    console.error('Exact token counting error:', error);
+    throw error;
+  }
+};
 
 const createSseStreamer = (res) => {
   let started = false;
@@ -1595,6 +1652,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
     'You have access to eight tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), deleteRows (for removing rows), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), filter_clear (to remove filters), and createSheet (to create new sheets).',
+    '**COMMUNICATION STYLE**: Be concise. The results of your work appear directly in the spreadsheet, so don\'t repeat or describe what you\'ve done at length. Simply confirm completion with a brief status (e.g., "Done" or "Filled all gaps"). If results are NOT visible in the spreadsheet (e.g., when answering questions or explaining errors), provide necessary explanation but remain succinct. Never rewrite or enumerate your work in chat messages.',
     '**DATA SIZE STRATEGY**: When working with user data, be mindful of context window usage: (1) For SMALL datasets (~20 cells or fewer): Look at the selected cell context directly and answer questions without SQL queries. (2) For LARGE datasets (>20 cells): Use executeSheetSql to query, aggregate, and analyze. Never load full large datasets into your context - use SQL for filtering, aggregation, and analysis.',
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM reviews.',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
@@ -2600,6 +2658,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
     'You have access to four functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
+    '**COMMUNICATION STYLE**: Be concise. The results of your work appear directly in the spreadsheet, so don\'t repeat or describe what you\'ve done at length. Simply confirm completion with a brief status (e.g., "Done" or "Filled all gaps"). If results are NOT visible in the spreadsheet (e.g., when answering questions or explaining errors), provide necessary explanation but remain succinct. Never rewrite or enumerate your work in chat messages.',
     '**DATA SIZE STRATEGY**: When working with user data, be mindful of context window usage: (1) For SMALL datasets (~20 cells or fewer): Look at the selected cell context directly and answer questions without SQL queries. (2) For LARGE datasets (>20 cells): Use executeSheetSql to query, aggregate, and analyze. Never load full large datasets into your context - use SQL for filtering, aggregation, and analysis.',
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. The AI() function calls Gemini Flash 2.0. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM context.spreadsheet.sheets["Reviews"].',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
@@ -3364,6 +3423,40 @@ app.delete('/sheets/:id/filters', (req, res) => {
 
   activeFilters.delete(req.params.id);
   res.status(204).end();
+});
+
+// Token counting endpoints
+app.post('/api/count-tokens', (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Invalid text parameter' });
+    }
+
+    const count = countTokensApprox(text);
+    res.json({ tokens: count, approximate: true });
+  } catch (error) {
+    console.error('Token counting error:', error);
+    res.status(500).json({ error: 'Failed to count tokens' });
+  }
+});
+
+app.post('/api/count-tokens-exact', async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Invalid text parameter' });
+    }
+
+    const count = await countTokensExact(text);
+    res.json({ tokens: count, approximate: false });
+  } catch (error) {
+    console.error('Exact token counting error:', error);
+    const message = error.message || 'Failed to count tokens';
+    res.status(500).json({ error: message });
+  }
 });
 
 app.listen(PORT, () => {

@@ -2,11 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import { CellSelection } from "@/pages/Index";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Maximize2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Maximize2, Zap } from "lucide-react";
 
 interface CoordinateDisplayProps {
   selection: CellSelection;
   cellContent?: string;
+  selectedCells?: { [key: string]: string };
 }
 
 const getColumnLabel = (colIndex: number): string => {
@@ -59,16 +61,82 @@ const formatSelectionReference = (selection: CellSelection): string => {
   return `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
 };
 
-export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayProps) => {
+export const CoordinateDisplay = ({ selection, cellContent, selectedCells }: CoordinateDisplayProps) => {
   const displayText = formatSelectionReference(selection);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isQuickLookOpen, setIsQuickLookOpen] = useState(false);
   const spaceDownTimeRef = useRef(0);
+  const [tokenCount, setTokenCount] = useState<number | null>(null);
+  const [isApproximate, setIsApproximate] = useState(true);
+  const [isLoadingExact, setIsLoadingExact] = useState(false);
 
   // Check if single cell is selected
   const isSingleCell = selection.start.row === selection.end.row &&
                        selection.start.col === selection.end.col &&
                        selection.type === 'cell';
+
+  // Get combined text from all selected cells
+  const selectedText = selectedCells
+    ? Object.values(selectedCells).join('\n')
+    : (cellContent || '');
+
+  // Fetch approximate token count when selection changes
+  useEffect(() => {
+    if (!selectedText) {
+      setTokenCount(null);
+      setIsApproximate(true);
+      return;
+    }
+
+    const fetchApproximateCount = async () => {
+      try {
+        const apiUrl = import.meta.env.VITE_SQLITE_API_URL || 'http://localhost:4000';
+        const response = await fetch(`${apiUrl}/api/count-tokens`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: selectedText }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setTokenCount(data.tokens);
+          setIsApproximate(true);
+        }
+      } catch (error) {
+        console.error('Failed to count tokens:', error);
+      }
+    };
+
+    fetchApproximateCount();
+  }, [selectedText]);
+
+  // Fetch exact token count from Anthropic API
+  const fetchExactCount = async () => {
+    if (!selectedText) return;
+
+    setIsLoadingExact(true);
+    try {
+      const apiUrl = import.meta.env.VITE_SQLITE_API_URL || 'http://localhost:4000';
+      const response = await fetch(`${apiUrl}/api/count-tokens-exact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: selectedText }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setTokenCount(data.tokens);
+        setIsApproximate(false);
+      } else {
+        const error = await response.json();
+        console.error('Failed to get exact count:', error);
+      }
+    } catch (error) {
+      console.error('Failed to get exact count:', error);
+    } finally {
+      setIsLoadingExact(false);
+    }
+  };
 
   // Spacebar quick look (like macOS) - using simple overlay to avoid focus issues
   useEffect(() => {
@@ -140,7 +208,7 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
     : cellContent;
 
   return (
-    <>
+    <TooltipProvider delayDuration={200}>
       <div className="bg-coordinate-background border-b border-border px-4 py-2">
         <div className="flex items-center gap-3">
           <div className="text-sm text-muted-foreground flex-shrink-0">
@@ -149,6 +217,39 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
           <div className="text-sm font-mono font-medium bg-card border border-border rounded-lg px-2 py-1 flex-shrink-0">
             {displayText}
           </div>
+          {tokenCount !== null && (
+            <>
+              <div className="text-sm text-muted-foreground flex-shrink-0">
+                Tokens:
+              </div>
+              <div className="flex items-center gap-0 text-sm font-mono font-medium bg-card border border-border rounded-lg overflow-hidden flex-shrink-0">
+                <div className="px-2 py-1 flex items-center gap-1">
+                  <span>{tokenCount.toLocaleString()}</span>
+                  {isApproximate && (
+                    <span className="text-xs text-muted-foreground" title="Approximate count using GPT-2 tokenizer">
+                      ~
+                    </span>
+                  )}
+                </div>
+                {isApproximate && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        className="px-2 py-1 border-l border-border hover:bg-accent transition-colors disabled:opacity-50"
+                        onClick={fetchExactCount}
+                        disabled={isLoadingExact}
+                      >
+                        <Zap className={`w-3 h-3 ${isLoadingExact ? 'animate-pulse' : ''}`} />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Get exact token count from Anthropic API</p>
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
+            </>
+          )}
           {cellContent && (
             <>
               <div className="text-sm bg-card border border-border rounded-lg px-3 py-1 flex-1 min-w-0 overflow-hidden">
@@ -198,6 +299,6 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
           </div>
         </div>
       )}
-    </>
+    </TooltipProvider>
   );
 };

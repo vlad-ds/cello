@@ -14,7 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Folder, Calendar, Upload, Trash2 } from "lucide-react";
+import { Plus, Folder, Upload, Trash2 } from "lucide-react";
 import { dataClient, type SpreadsheetRecord } from "@/integrations/database";
 import { useNavigate } from "react-router-dom";
 import { FileImport } from "@/components/FileImport";
@@ -181,11 +181,6 @@ const SpreadsheetsList = () => {
                 <span className="text-sm">Import File</span>
               </Button>
             </FileImport>
-
-            <Button variant="ghost" className="flex flex-col items-center gap-2 h-auto py-3 px-6 rounded-xl hover:bg-muted" onClick={() => {}}>
-              <Folder className="w-5 h-5" />
-              <span className="text-sm">Browse</span>
-            </Button>
           </div>
         </div>
 

@@ -20,6 +20,7 @@ interface CellProps {
   ROWS?: number;
   isHighlighted?: boolean;
   highlightColor?: string;
+  isInFillPreview?: boolean;
 }
 
 const CellComponent = ({
@@ -41,9 +42,11 @@ const CellComponent = ({
   ROWS,
   isHighlighted = false,
   highlightColor = 'yellow',
+  isInFillPreview = false,
 }: CellProps) => {
   const [editValue, setEditValue] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     setEditValue(value);
@@ -53,11 +56,20 @@ const CellComponent = ({
     if (isEditing && inputRef.current) {
       inputRef.current.focus();
       inputRef.current.select();
+      isSubmittingRef.current = false;
     }
   }, [isEditing]);
 
   const handleSubmit = () => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+
     onEdit?.(rowIndex ?? -1, colIndex ?? -1, editValue);
+
+    // Clear selection after a brief delay to ensure it happens after state updates
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 10);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -70,10 +82,10 @@ const CellComponent = ({
           const currentRow = selection.start.row;
           const currentCol = selection.start.col;
           const newRow = Math.min(ROWS - 1, currentRow + 1);
-          onSelectionChange({ 
-            start: { row: newRow, col: currentCol }, 
-            end: { row: newRow, col: currentCol }, 
-            type: 'cell' 
+          onSelectionChange({
+            start: { row: newRow, col: currentCol },
+            end: { row: newRow, col: currentCol },
+            type: 'cell'
           });
         }, 0);
       }
@@ -109,9 +121,10 @@ const CellComponent = ({
   const cellClassName = cn(
     "border-r border-b border-grid-border flex items-start px-2 py-1 text-sm select-none cursor-cell overflow-hidden relative pointer-events-auto",
     isHeader && "bg-grid-header text-grid-header-foreground font-medium cursor-text items-center",
-    !isHeader && !isHighlighted && "bg-grid hover:bg-grid-hover",
+    !isHeader && !isHighlighted && !isInFillPreview && "bg-grid hover:bg-grid-hover",
     !isHeader && isHighlighted && getHighlightClasses(),
     isSelected && !isHeader && "bg-grid-selected z-10",
+    isInFillPreview && !isHeader && "bg-primary/10",
     className
   );
 
@@ -170,6 +183,7 @@ export const Cell = memo(CellComponent, (prevProps, nextProps) => {
     prevProps.isHeader === nextProps.isHeader &&
     prevProps.isHighlighted === nextProps.isHighlighted &&
     prevProps.highlightColor === nextProps.highlightColor &&
+    prevProps.isInFillPreview === nextProps.isInFillPreview &&
     prevProps.className === nextProps.className &&
     prevProps.onMouseDown === nextProps.onMouseDown &&
     prevProps.onMouseEnter === nextProps.onMouseEnter &&

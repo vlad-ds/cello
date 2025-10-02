@@ -8,6 +8,7 @@ import { CoordinateDisplay } from "@/components/CoordinateDisplay";
 import { ChatPanel } from "@/components/ChatPanel";
 import { FileImport } from "@/components/FileImport";
 import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
+import { FillConfirmationDialog } from "@/components/FillConfirmationDialog";
 import {
   dataClient,
   isSupabaseBackend,
@@ -991,6 +992,111 @@ const SpreadsheetView = () => {
     }
   };
 
+  const [fillRequestMessage, setFillRequestMessage] = useState<string | null>(null);
+  const [fillConfirmDialog, setFillConfirmDialog] = useState<{
+    sourceRange: string;
+    targetRange: string;
+    sourceData: string[][];
+  } | null>(null);
+
+  const handleFillRequest = (sourceRange: string, targetRange: string, sourceData: string[][], skipConfirmation: boolean) => {
+    if (skipConfirmation) {
+      // Skip dialog and send directly to AI
+      handleFillConfirm(undefined, sourceRange, targetRange, sourceData);
+    } else {
+      // Show confirmation dialog
+      setFillConfirmDialog({ sourceRange, targetRange, sourceData });
+    }
+  };
+
+  const handleFillConfirm = (
+    additionalInstructions?: string,
+    overrideSourceRange?: string,
+    overrideTargetRange?: string,
+    overrideSourceData?: string[][]
+  ) => {
+    // Allow direct calling with override parameters (for skip confirmation)
+    const sourceRange = overrideSourceRange || fillConfirmDialog?.sourceRange;
+    const targetRange = overrideTargetRange || fillConfirmDialog?.targetRange;
+    const sourceData = overrideSourceData || fillConfirmDialog?.sourceData;
+
+    if (!sourceRange || !targetRange || !sourceData) return;
+
+    // Parse source range to get cell references
+    const [startCell] = sourceRange.split(':');
+    const startColMatch = startCell.match(/^([A-Z]+)(\d+)$/);
+    const startCol = startColMatch ? startColMatch[1] : 'A';
+    const startRow = startColMatch ? parseInt(startColMatch[2]) : 1;
+
+    // Helper to convert column index to letter
+    const colToLetter = (col: number): string => {
+      let letter = '';
+      let num = col;
+      while (num >= 0) {
+        letter = String.fromCharCode((num % 26) + 65) + letter;
+        num = Math.floor(num / 26) - 1;
+      }
+      return letter;
+    };
+
+    // Helper to convert column letter to index
+    const letterToCol = (letter: string): number => {
+      let col = 0;
+      for (let i = 0; i < letter.length; i++) {
+        col = col * 26 + (letter.charCodeAt(i) - 64);
+      }
+      return col - 1;
+    };
+
+    const startColIndex = letterToCol(startCol);
+
+    // Format the data in a more readable way
+    let dataPreview = '';
+
+    if (sourceData.length === 1 && sourceData[0].length === 1) {
+      // Single cell
+      dataPreview = `• ${startCell}: ${sourceData[0][0]}`;
+    } else if (sourceData.length === 1) {
+      // Single row, multiple columns
+      dataPreview = sourceData[0].map((cell, idx) => {
+        const cellRef = `${colToLetter(startColIndex + idx)}${startRow}`;
+        return `• ${cellRef}: ${cell}`;
+      }).join('\n');
+    } else if (sourceData[0].length === 1) {
+      // Multiple rows, single column
+      dataPreview = sourceData.map((row, idx) => {
+        const cellRef = `${startCol}${startRow + idx}`;
+        return `• ${cellRef}: ${row[0]}`;
+      }).join('\n');
+    } else {
+      // Multiple rows and columns
+      dataPreview = sourceData.map((row, rowIdx) => {
+        return row.map((cell, colIdx) => {
+          const cellRef = `${colToLetter(startColIndex + colIdx)}${startRow + rowIdx}`;
+          return `• ${cellRef}: ${cell}`;
+        }).join('\n');
+      }).join('\n');
+    }
+
+    let message = `I'm using the fill handle to extend data from ${sourceRange} to ${targetRange}.\n\nSource range (${sourceRange}):\n${dataPreview}\n\nPlease analyze the pattern and fill the target range (${targetRange}) appropriately.`;
+
+    // Append additional instructions if provided
+    if (additionalInstructions) {
+      message += `\n\nAdditional instructions: ${additionalInstructions}`;
+    }
+
+    // Set the message to be sent to the chat panel
+    setFillRequestMessage(message);
+
+    // Clear dialog and message after a brief delay
+    setFillConfirmDialog(null);
+    setTimeout(() => setFillRequestMessage(null), 100);
+  };
+
+  const handleFillCancel = () => {
+    setFillConfirmDialog(null);
+  };
+
   const updateColumnWidth = (colIndex: number, width: number) => {
     setColumnWidths(prev => {
       const updated = {
@@ -1150,6 +1256,7 @@ const SpreadsheetView = () => {
                     ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
                     : undefined
                 }
+                selectedCells={getSelectedCellsContent()}
               />
               <div className="text-sm text-muted-foreground">
                 {dataRowCount.toLocaleString()} rows
@@ -1178,6 +1285,7 @@ const SpreadsheetView = () => {
                   getColumnWidth={getColumnWidth}
                   getRowHeight={getRowHeight}
                   highlights={activeHighlights.filter(h => h.sheetId === activeSheet.id)}
+                  onFillRequest={handleFillRequest}
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -1209,6 +1317,7 @@ const SpreadsheetView = () => {
               onScrollToHighlight={scrollToHighlight}
               filters={activeFilters.find(item => item.sheetId === activeSheet?.id)?.filters || []}
               onClearFilters={() => activeSheet && clearFilters(activeSheet.id)}
+              programmaticMessage={fillRequestMessage}
             />
           </div>
         </div>
@@ -1225,6 +1334,18 @@ const SpreadsheetView = () => {
           />
         </div>
       </div>
+
+      {/* Fill Confirmation Dialog */}
+      {fillConfirmDialog && (
+        <FillConfirmationDialog
+          open={!!fillConfirmDialog}
+          sourceRange={fillConfirmDialog.sourceRange}
+          targetRange={fillConfirmDialog.targetRange}
+          sourceData={fillConfirmDialog.sourceData}
+          onConfirm={handleFillConfirm}
+          onCancel={handleFillCancel}
+        />
+      )}
     </div>
   );
 };

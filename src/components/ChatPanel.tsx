@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Sparkles, Info, Database, ChevronDown, Hammer, X, Copy } from "lucide-react";
+import { Send, User, Sparkles, Info, Database, ChevronDown, Hammer, X, Copy, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -46,6 +46,7 @@ interface ChatPanelProps {
   onScrollToHighlight?: (highlight: CellHighlight) => void;
   filters?: FilterCondition[];
   onClearFilters?: () => void;
+  programmaticMessage?: string | null;
 }
 
 const getRangeValue = (selectedCells?: { [key: string]: string }) => {
@@ -92,20 +93,22 @@ const welcomeMessage: Message = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hey there! ✨ I'm **Cello**, your spreadsheet sidekick! I'm here to help you wrangle data, crunch numbers, and make sense of all those cells. Think of me as your friendly neighborhood spreadsheet wizard! 🪄\n\nNeed help? Just ask! I can sum columns, calculate averages, spot trends, and even help you find that one cell you've been looking for. Let's make spreadsheets fun together! 🎉",
+    "Hey! 🎻 I'm **Cello**—your AI assistant in this interactive 2D canvas. Select cells, ask questions, and I'll help you analyze, transform, and visualize your data.",
   timestamp: new Date(),
   contextRange: null,
   toolCalls: null,
   isStreaming: false,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, onScrollToHighlight, filters = [], onClearFilters }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, onScrollToHighlight, filters = [], onClearFilters, programmaticMessage }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const abortStreamRef = useRef(false);
 
   useEffect(() => {
     if (isSupabaseBackend) {
@@ -160,10 +163,20 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
     scrollToBottom();
   }, [messages]);
 
-  const handleSendMessage = async () => {
-    if (!input.trim()) return;
+  // Handle programmatic messages (e.g., from fill handle)
+  const programmaticMessageRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (programmaticMessage && programmaticMessage.trim() && programmaticMessage !== programmaticMessageRef.current) {
+      programmaticMessageRef.current = programmaticMessage;
+      // Send the message directly
+      sendMessage(programmaticMessage);
+    }
+  }, [programmaticMessage]);
 
-    const trimmed = input.trim();
+  const sendMessage = async (messageText: string) => {
+    if (!messageText.trim()) return;
+
+    const trimmed = messageText.trim();
     const rangeValue = getRangeValue(selectedCells);
     const timestamp = new Date();
     const userMessage: Message = {
@@ -177,8 +190,8 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setInput('');
     setIsTyping(true);
+    abortStreamRef.current = false;
 
     const streamChat = (!isSupabaseBackend && typeof dataClient.sendChatMessageStream === 'function')
       ? dataClient.sendChatMessageStream.bind(dataClient)
@@ -199,6 +212,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           setMessages((prev) => [...prev, warningMessage]);
         } else {
           const assistantId = `assistant-${Date.now()}`;
+          setIsStreaming(true);
           setMessages((prev) => [
             ...prev,
             {
@@ -222,6 +236,22 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             selectedCells: selectedCells || {},
             activeSheetId,
           })) {
+            // Check if user wants to abort the stream
+            if (abortStreamRef.current) {
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantId
+                    ? {
+                        ...message,
+                        content: (aggregatedText || message.content) + '\n\n_[Response interrupted by user]_',
+                        isStreaming: false,
+                      }
+                    : message
+                )
+              );
+              break;
+            }
+
             if (event.type === 'delta') {
               aggregatedText += event.text;
               if (!toolCallsSeen && ackSnapshot === null) {
@@ -407,9 +437,21 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
       onAssistantToolCalls?.(null);
     } finally {
       setIsTyping(false);
+      setIsStreaming(false);
     }
 
     onCommand?.(trimmed);
+  };
+
+  const handleSendMessage = async () => {
+    if (!input.trim()) return;
+    const messageText = input;
+    setInput(''); // Clear input immediately
+    await sendMessage(messageText);
+  };
+
+  const handleStopStreaming = () => {
+    abortStreamRef.current = true;
   };
 
   const handleClearConversation = async () => {
@@ -562,21 +604,15 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
               className={`flex gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div className={`flex gap-3 max-w-[80%] ${message.role === "user" ? "flex-row-reverse" : ""}`}>
-                {/* Avatar */}
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-transform hover:scale-110 ${
-                  message.role === "user"
-                    ? "bg-gradient-to-br from-primary/80 to-primary text-primary-foreground shadow-sm"
-                    : "bg-gradient-to-br from-muted to-muted/60 text-muted-foreground"
-                }`}>
-                  {message.role === "user" ? (
+                {/* Avatar - only for user */}
+                {message.role === "user" && (
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-transform hover:scale-110 bg-gradient-to-br from-primary/80 to-primary text-primary-foreground shadow-sm">
                     <User className="w-4 h-4" />
-                  ) : (
-                    <Bot className="w-4 h-4" />
-                  )}
-                </div>
+                  </div>
+                )}
 
                 {/* Message Content */}
-                <div className={`space-y-1 ${message.role === "user" ? "text-right" : ""}`}>
+                <div className="space-y-1">
                   <div className={`p-3 rounded-2xl ${
                     message.role === "user"
                       ? "bg-primary/15 text-foreground border border-primary/20"
@@ -816,9 +852,6 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           {/* Typing Indicator */}
           {isTyping && (
             <div className="flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-muted to-muted/60 text-muted-foreground flex items-center justify-center flex-shrink-0">
-                <Bot className="w-4 h-4 animate-bounce" />
-              </div>
               <div className="bg-muted/50 p-3 rounded-2xl">
                 <div className="flex gap-1">
                   <div className="w-2 h-2 bg-primary rounded-full animate-bounce"></div>
@@ -844,14 +877,26 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             className="flex-1"
             disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
           />
-          <Button
-            onClick={handleSendMessage}
-            disabled={!input.trim() || isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
-            size="icon"
-            className="transition-transform hover:scale-105 active:scale-95"
-          >
-            <Send className="w-4 h-4" />
-          </Button>
+          {isStreaming ? (
+            <Button
+              onClick={handleStopStreaming}
+              size="icon"
+              variant="destructive"
+              className="transition-transform hover:scale-105 active:scale-95"
+              title="Stop generation"
+            >
+              <Square className="w-4 h-4" />
+            </Button>
+          ) : (
+            <Button
+              onClick={handleSendMessage}
+              disabled={!input.trim() || isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
+              size="icon"
+              className="transition-transform hover:scale-105 active:scale-95"
+            >
+              <Send className="w-4 h-4" />
+            </Button>
+          )}
         </div>
         <p className="text-xs text-muted-foreground mt-2">
           💡 Try: "Sum column A", "Find the highest value", "Highlight duplicates"
