@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import Database from 'better-sqlite3';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { encode } from 'gpt-tokenizer';
@@ -528,8 +528,10 @@ db.exec(`
     column_index INTEGER NOT NULL,
     header TEXT NOT NULL,
     sql_name TEXT NOT NULL,
+    column_id TEXT NOT NULL,
     PRIMARY KEY (sheet_id, column_index),
     UNIQUE (sheet_id, sql_name),
+    UNIQUE (sheet_id, column_id),
     FOREIGN KEY (sheet_id) REFERENCES sheets(id) ON DELETE CASCADE
   );
   CREATE TABLE IF NOT EXISTS chat_messages (
@@ -556,6 +558,22 @@ try {
   // Column already exists
 }
 
+try {
+  db.prepare('ALTER TABLE sheet_columns ADD COLUMN column_id TEXT').run();
+} catch (_error) {
+  // Column already exists
+}
+
+try {
+  db.prepare('CREATE UNIQUE INDEX sheet_columns_sheet_column_id_idx ON sheet_columns (sheet_id, column_id)').run();
+} catch (_error) {
+  // Index already exists
+}
+
+db.prepare(
+  'UPDATE sheet_columns SET column_id = COALESCE(column_id, sql_name) WHERE column_id IS NULL'
+).run();
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -573,6 +591,14 @@ const activeFilters = new Map();
 const now = () => new Date().toISOString();
 const defaultHeader = (index) => `COLUMN_${index + 1}`;
 const defaultSqlName = (index) => `column_${index + 1}`;
+
+const SHEET_METADATA_COLUMNS = new Set([
+  'row_id',
+  'order_key',
+  'created_at',
+  'updated_at',
+  'deleted_at',
+]);
 
 const sanitizeSqlIdentifier = (value, fallback) => {
   const normalized = value
@@ -606,7 +632,47 @@ const touchSheet = (sheetId) => {
 
 const ensureSheetTable = (sheetId) => {
   const tableName = tableNameForSheet(sheetId);
-  db.prepare(`CREATE TABLE IF NOT EXISTS "${tableName}" (row_number INTEGER PRIMARY KEY)`).run();
+
+  const createTable = () => {
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS "${tableName}" (
+        row_id TEXT PRIMARY KEY,
+        order_key REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      )`
+    ).run();
+
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS "${tableName}_order_key_idx" ON "${tableName}" (order_key, row_id)`
+    ).run();
+    db.prepare(
+      `CREATE INDEX IF NOT EXISTS "${tableName}_deleted_at_idx" ON "${tableName}" (deleted_at)`
+    ).run();
+  };
+
+  const existing = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(tableName);
+
+  if (!existing) {
+    createTable();
+    return tableName;
+  }
+
+  const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all();
+  const hasRowId = columns.some((col) => col.name === 'row_id');
+  const hasLegacyRowNumber = columns.some((col) => col.name === 'row_number');
+
+  if (!hasRowId || hasLegacyRowNumber) {
+    db.prepare(`DROP TABLE IF EXISTS "${tableName}"`).run();
+    db.prepare('DELETE FROM sheet_columns WHERE sheet_id = ?').run(sheetId);
+    createTable();
+  } else {
+    createTable();
+  }
+
   return tableName;
 };
 
@@ -667,24 +733,42 @@ const clearConversation = (spreadsheetId) => {
   db.prepare('DELETE FROM chat_messages WHERE spreadsheet_id = ?').run(spreadsheetId);
 };
 
-const computeRangeLabel = (selectedCells = {}) => {
-  const keys = Object.keys(selectedCells);
-  if (!keys || keys.length === 0) return null;
-  const sorted = keys.map((key) => key.toUpperCase()).sort();
-  const first = sorted[0];
-  const last = sorted[sorted.length - 1];
-  return first === last ? first : `${first}:${last}`;
+const computeRangeLabel = (selection) => {
+  if (!selection || typeof selection !== 'object') {
+    return null;
+  }
+  const coords = selection.coords;
+  if (typeof coords === 'string' && coords.trim()) {
+    return coords.trim();
+  }
+  return null;
 };
 
 const getSheetColumns = (sheetId) => {
   const tableName = tableNameForSheet(sheetId);
+  const metaColumns = db
+    .prepare(
+      'SELECT column_index, header, sql_name, column_id FROM sheet_columns WHERE sheet_id = ? ORDER BY column_index ASC'
+    )
+    .all(sheetId);
+
+  if (metaColumns.length > 0) {
+    return metaColumns.map((col) => ({
+      column_index: col.column_index,
+      header: col.header,
+      sql_name: col.sql_name,
+      column_id: col.column_id || col.sql_name,
+    }));
+  }
+
   const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all();
   return columns
-    .filter(col => col.name !== 'row_number')
+    .filter((col) => !SHEET_METADATA_COLUMNS.has(col.name))
     .map((col, index) => ({
       column_index: index,
-      header: col.name, // Column name IS the header (sanitized)
+      header: col.name,
       sql_name: col.name,
+      column_id: col.name,
     }));
 };
 
@@ -721,12 +805,10 @@ const buildSheetMetadataSummary = (spreadsheetId) => {
     .all(spreadsheetId)
     .map((sheet) => {
       const tableName = tableNameForSheet(sheet.id);
-      // Get actual column names from the table
-      const columns = db.prepare(`PRAGMA table_info("${tableName}")`).all();
-      const columnNames = columns
-        .filter(col => col.name !== 'row_number')
-        .map(col => `"${col.name}"`)
-        .join(', ');
+      const columnMeta = getSheetColumns(sheet.id);
+      const columnNames = columnMeta.length > 0
+        ? columnMeta.map((col) => `"${col.header}" ↦ ${col.sql_name}`).join(', ')
+        : 'No columns yet';
 
       return {
         ...sheet,
@@ -957,28 +1039,90 @@ const executeCreateTableAs = (spreadsheetId, rawSql) => {
     return match;
   });
 
-  // Execute CREATE TABLE AS with rewritten references
-  const finalSql = `CREATE TABLE "${newTableName}" AS ${rewrittenSelect}`;
-  db.prepare(finalSql).run();
+  const tempTableName = `temp_ctas_${randomUUID().replace(/-/g, '')}`;
+  db.prepare(`DROP TABLE IF EXISTS "${tempTableName}"`).run();
+  db.prepare(`CREATE TEMP TABLE "${tempTableName}" AS ${rewrittenSelect}`).run();
 
-  // Infer columns from the newly created table
-  const columns = db.prepare(`PRAGMA table_info("${newTableName}")`).all();
-  const columnNames = columns
-    .filter(col => col.name !== 'row_number' && !col.name.startsWith('column_'))
-    .map(col => col.name);
-
-  // Add row_number column if it doesn't exist
-  const hasRowNumber = columns.some(col => col.name === 'row_number');
-  if (!hasRowNumber) {
-    db.prepare(`ALTER TABLE "${newTableName}" ADD COLUMN row_number INTEGER`).run();
-    // Set row numbers for existing rows
-    db.prepare(`UPDATE "${newTableName}" SET row_number = rowid`).run();
+  const tempColumns = db.prepare(`PRAGMA table_info("${tempTableName}")`).all();
+  if (!tempColumns || tempColumns.length === 0) {
+    db.prepare(`DROP TABLE IF EXISTS "${tempTableName}"`).run();
+    throw new Error('CREATE TABLE AS query did not produce any columns.');
   }
+
+  const usedSqlNames = new Set();
+  const columnInfos = tempColumns.map((col, index) => {
+    const header = col.name || defaultHeader(index);
+    const baseSql = sanitizeSqlIdentifier(header, defaultSqlName(index));
+    let sqlName = baseSql;
+    let suffix = 1;
+    while (usedSqlNames.has(sqlName) || SHEET_METADATA_COLUMNS.has(sqlName)) {
+      sqlName = `${baseSql}_${suffix}`;
+      suffix += 1;
+    }
+    usedSqlNames.add(sqlName);
+
+    return {
+      header,
+      sqlName,
+      columnId: randomUUID(),
+      columnIndex: index,
+      sourceName: col.name,
+    };
+  });
+
+  const columnDefinitions = columnInfos
+    .map((info) => `"${info.sqlName}" TEXT`)
+    .join(',\n    ');
+
+  db.prepare(`DROP TABLE IF EXISTS "${newTableName}"`).run();
+  db.prepare(
+    `CREATE TABLE "${newTableName}" (
+      row_id TEXT PRIMARY KEY,
+      order_key REAL NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      ${columnDefinitions}
+    )`
+  ).run();
+
+  db.prepare(
+    `CREATE INDEX IF NOT EXISTS "${newTableName}_order_key_idx" ON "${newTableName}" (order_key, row_id)`
+  ).run();
+  db.prepare(
+    `CREATE INDEX IF NOT EXISTS "${newTableName}_deleted_at_idx" ON "${newTableName}" (deleted_at)`
+  ).run();
+
+  db.prepare('DELETE FROM sheet_columns WHERE sheet_id = ?').run(newSheet.id);
+  columnInfos.forEach((info) => {
+    db.prepare(
+      `INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name, column_id)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(newSheet.id, info.columnIndex, info.header, info.sqlName, info.columnId);
+  });
+
+  const insertTimestamp = now();
+  const insertColumnSql = columnInfos.map((info) => `"${info.sqlName}"`).join(', ');
+  const selectColumnSql = columnInfos.map((info) => `"${info.sourceName}"`).join(', ');
+  const insertSql = `
+    INSERT INTO "${newTableName}" (row_id, order_key, created_at, updated_at${insertColumnSql ? `, ${insertColumnSql}` : ''})
+    SELECT lower(hex(randomblob(16))) AS row_id,
+           CAST(rowid AS REAL) AS order_key,
+           ? AS created_at,
+           ? AS updated_at${selectColumnSql ? `, ${selectColumnSql}` : ''}
+    FROM "${tempTableName}"
+  `;
+
+  db.prepare(insertSql).run(insertTimestamp, insertTimestamp);
+  db.prepare(`DROP TABLE IF EXISTS "${tempTableName}"`).run();
+
+  normalizeSheetRows(newSheet.id);
 
   touchSpreadsheet(spreadsheetId);
   touchSheet(newSheet.id);
 
-  const rowCount = db.prepare(`SELECT COUNT(*) as count FROM "${newTableName}"`).get().count;
+  const rowCount = db.prepare(`SELECT COUNT(*) as count FROM "${newTableName}" WHERE deleted_at IS NULL`).get().count;
+  const columnNames = columnInfos.map((info) => info.header);
 
   return {
     sheet: newSheet,
@@ -1076,21 +1220,7 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
   }
 
   touchSheet(sheetId);
-
-  if (operation === 'insert') {
-    const maxRow = db
-      .prepare(`SELECT COALESCE(MAX(row_number), 0) AS maxRow FROM "${tableName}" WHERE row_number IS NOT NULL`)
-      .get()?.maxRow ?? 0;
-
-    const rowsWithoutRowNumber = db
-      .prepare(`SELECT rowid FROM "${tableName}" WHERE row_number IS NULL ORDER BY rowid`)
-      .all();
-
-    rowsWithoutRowNumber.forEach((row, index) => {
-      const rowNumber = maxRow + index + 1;
-      db.prepare(`UPDATE "${tableName}" SET row_number = ? WHERE rowid = ?`).run(rowNumber, row.rowid);
-    });
-  }
+  normalizeSheetRows(sheetId);
 
   return {
     sheet,
@@ -1132,9 +1262,17 @@ const ensureColumnCount = (sheetId, targetCount) => {
     let suffix = 1;
     while (existingSqlNames.has(sqlName)) {
       sqlName = `${baseSqlName}_${suffix}`;
+      suffix += 1;
     }
+
     db.prepare(`ALTER TABLE "${tableName}" ADD COLUMN "${sqlName}" TEXT`).run();
     existingSqlNames.add(sqlName);
+
+    const columnId = randomUUID();
+    db.prepare(
+      `INSERT OR REPLACE INTO sheet_columns (sheet_id, column_index, header, sql_name, column_id) VALUES (?, ?, ?, ?, ?)`
+    ).run(sheetId, columnIndex, header, sqlName, columnId);
+
     columnIndex += 1;
   }
 
@@ -1157,13 +1295,83 @@ const renameColumn = (sheetId, columnIndex, newHeaderRaw) => {
   if (column.sql_name !== uniqueSql) {
     db.prepare(`ALTER TABLE "${tableName}" RENAME COLUMN "${column.sql_name}" TO "${uniqueSql}"`).run();
   }
+
+  const columnId = column.column_id || randomUUID();
+  db.prepare(
+    `INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name, column_id)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(sheet_id, column_index) DO UPDATE SET
+       header = excluded.header,
+       sql_name = excluded.sql_name`
+  ).run(sheetId, columnIndex, finalHeader, uniqueSql, columnId);
 };
 
-const setCellValue = (sheetId, rowNumber, columnIndex, value) => {
-  if (rowNumber <= 0) {
-    throw new Error('Row numbers must be positive for cell values.');
+const computeOrderKeyForInsert = (tableName, displayIndex = null) => {
+  const timestampOrderFallback = () => {
+    const { maxKey } =
+      db.prepare(`SELECT COALESCE(MAX(order_key), 0) AS maxKey FROM "${tableName}" WHERE deleted_at IS NULL`).get() || {};
+    return Number(maxKey ?? 0) + 1;
+  };
+
+  if (!Number.isInteger(displayIndex) || displayIndex < 0) {
+    return timestampOrderFallback();
   }
 
+  const targetIndex = displayIndex + 1;
+  const before = db
+    .prepare(
+      `SELECT order_key FROM (
+        SELECT order_key, ROW_NUMBER() OVER (ORDER BY order_key, created_at, row_id) AS display_index
+        FROM "${tableName}"
+        WHERE deleted_at IS NULL
+      ) WHERE display_index = ?`
+    )
+    .get(targetIndex);
+
+  if (!before) {
+    return timestampOrderFallback();
+  }
+
+  const after = db
+    .prepare(
+      `SELECT order_key FROM (
+        SELECT order_key, ROW_NUMBER() OVER (ORDER BY order_key, created_at, row_id) AS display_index
+        FROM "${tableName}"
+        WHERE deleted_at IS NULL
+      ) WHERE display_index = ?`
+    )
+    .get(targetIndex + 1);
+
+  if (!after) {
+    return Number(before.order_key) + 1;
+  }
+
+  return (Number(before.order_key) + Number(after.order_key)) / 2;
+};
+
+const ensureRowPresence = (sheetId, tableName, rowId, displayIndex = null) => {
+  if (rowId) {
+    const existing = db
+      .prepare(`SELECT row_id FROM "${tableName}" WHERE row_id = ? LIMIT 1`)
+      .get(rowId);
+    if (existing) {
+      return rowId;
+    }
+  }
+
+  const finalRowId = rowId || randomUUID();
+  const orderKey = computeOrderKeyForInsert(tableName, displayIndex ?? null);
+  const timestamp = now();
+
+  db.prepare(
+    `INSERT INTO "${tableName}" (row_id, order_key, created_at, updated_at)
+     VALUES (?, ?, ?, ?)`
+  ).run(finalRowId, orderKey, timestamp, timestamp);
+
+  return finalRowId;
+};
+
+const setCellValue = (sheetId, { rowId, displayIndex = null, columnIndex, value }) => {
   const { tableName } = ensureColumnCount(sheetId, columnIndex + 1);
   const columns = getSheetColumns(sheetId);
   const column = columns[columnIndex];
@@ -1171,97 +1379,135 @@ const setCellValue = (sheetId, rowNumber, columnIndex, value) => {
     throw new Error('Column does not exist');
   }
 
-  const storedRow = rowNumber;
+  const finalRowId = ensureRowPresence(sheetId, tableName, rowId, displayIndex);
+  const normalizedValue = typeof value === 'string' && value.length > 0 ? value : null;
+  const timestamp = now();
 
-  if (typeof value !== 'string' || value.length === 0) {
-    db.prepare(`UPDATE "${tableName}" SET "${column.sql_name}" = NULL WHERE row_number = ?`).run(storedRow);
+  db.prepare(`UPDATE "${tableName}" SET "${column.sql_name}" = ?, updated_at = ? WHERE row_id = ?`).run(
+    normalizedValue,
+    timestamp,
+    finalRowId
+  );
 
-    if (columns.length === 0) {
-      db.prepare(`DELETE FROM "${tableName}" WHERE row_number = ?`).run(storedRow);
-      return;
-    }
+  if (normalizedValue === null && columns.length > 0) {
+    const columnSelect = columns.map((col) => `"${col.sql_name}" IS NULL`).join(' AND ');
+    const query = `SELECT CASE WHEN ${columnSelect} THEN 1 ELSE 0 END AS isEmpty FROM "${tableName}" WHERE row_id = ?`;
+    const { isEmpty } = db.prepare(query).get(finalRowId) || {};
 
-    const selectColumns = columns.map((col) => `"${col.sql_name}"`).join(', ');
-    const rowData = db
-      .prepare(
-        `SELECT ${selectColumns} FROM "${tableName}" WHERE row_number = ?`
-      )
-      .get(storedRow);
-
-    const hasValues = rowData
-      ? columns.some((col) => {
-          const cell = rowData[col.sql_name];
-          return cell !== null && cell !== undefined && String(cell).trim().length > 0;
-        })
-      : false;
-
-    if (!hasValues) {
-      db.prepare(`DELETE FROM "${tableName}" WHERE row_number = ?`).run(storedRow);
+    if (Number(isEmpty) === 1) {
+      db.prepare(`UPDATE "${tableName}" SET deleted_at = ?, updated_at = ? WHERE row_id = ?`).run(
+        timestamp,
+        timestamp,
+        finalRowId
+      );
     }
   } else {
-    const upsertSql = `INSERT INTO "${tableName}" (row_number, "${column.sql_name}") VALUES (?, ?)
-       ON CONFLICT(row_number) DO UPDATE SET "${column.sql_name}" = excluded."${column.sql_name}"`;
-    try {
-      db.prepare(upsertSql).run(storedRow, value);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/ON CONFLICT clause does not match/i.test(message)) {
-        throw error;
-      }
-
-      const existing = db
-        .prepare(`SELECT rowid FROM "${tableName}" WHERE row_number = ? LIMIT 1`)
-        .get(storedRow);
-
-      if (existing) {
-        db.prepare(`UPDATE "${tableName}" SET "${column.sql_name}" = ? WHERE row_number = ?`).run(value, storedRow);
-      } else {
-        db.prepare(`INSERT INTO "${tableName}" (row_number, "${column.sql_name}") VALUES (?, ?)`).run(storedRow, value);
-      }
-    }
+    db.prepare(`UPDATE "${tableName}" SET deleted_at = NULL WHERE row_id = ?`).run(finalRowId);
   }
+
+  return finalRowId;
+};
+
+const normalizeSheetRows = (sheetId) => {
+  const tableName = tableNameForSheet(sheetId);
+  const timestamp = now();
+
+  db.prepare(`UPDATE "${tableName}" SET row_id = lower(hex(randomblob(16))) WHERE row_id IS NULL`).run();
+
+  const orderedRows = db
+    .prepare(
+      `SELECT row_id FROM "${tableName}"
+       WHERE deleted_at IS NULL
+       ORDER BY order_key IS NULL, order_key, created_at, row_id`
+    )
+    .all();
+
+  orderedRows.forEach((row, index) => {
+    db.prepare(`UPDATE "${tableName}" SET order_key = ? WHERE row_id = ?`).run(index + 1, row.row_id);
+  });
+
+  db.prepare(
+    `UPDATE "${tableName}" SET created_at = COALESCE(created_at, ?), updated_at = COALESCE(updated_at, ?)
+     WHERE created_at IS NULL OR updated_at IS NULL`
+  ).run(timestamp, timestamp);
+};
+
+const buildViewSpec = (sheetId, sheetRecord, filters) => {
+  const spec = {
+    filters: filters.map((filter) => ({ condition: filter.condition })),
+    sort: [{ column: '__order_key__', dir: 'asc' }],
+    hiddenCols: [],
+  };
+
+  const hash = createHash('sha256')
+    .update(
+      JSON.stringify({
+        sheetId,
+        spec,
+        revision: sheetRecord?.updated_at ?? null,
+      })
+    )
+    .digest('hex');
+
+  return {
+    spec,
+    hash: `sha256:${hash}`,
+    revision: sheetRecord?.updated_at ?? now(),
+  };
 };
 
 const loadSheetTable = (sheetId) => {
   const tableName = ensureSheetTable(sheetId);
   const columns = getSheetColumns(sheetId);
 
-  if (columns.length === 0) {
-    return { data: [], filters: [] };
-  }
-
-  const selectColumns = columns.map((column) => `"${column.sql_name}" AS "${column.sql_name}"`).join(', ');
-
-  // Apply active filters (conditions define which rows to SHOW)
   const filters = activeFilters.get(sheetId) || [];
-  let whereClause = '';
+  let whereClause = ' WHERE deleted_at IS NULL';
   if (filters.length > 0) {
     const conditions = filters.map((filter) => `(${filter.condition})`);
-    whereClause = ` WHERE ${conditions.join(' AND ')}`;
+    whereClause += ` AND ${conditions.join(' AND ')}`;
   }
 
-  const rows = db
-    .prepare(
-      `SELECT row_number${selectColumns ? `, ${selectColumns}` : ''} FROM "${tableName}"${whereClause} ORDER BY row_number`
-    )
-    .all();
-
-  const headerRow = { row_number: 0 };
-  columns.forEach((column, index) => {
-    headerRow[`column_${index + 1}`] = column.header;
+  const selectList = ['row_id', 'order_key', 'created_at', 'updated_at'];
+  columns.forEach((column) => {
+    selectList.push(`"${column.sql_name}" AS "${column.sql_name}"`);
   });
+
+  const selectSql = selectList.join(', ');
+
+  const query = `
+    SELECT ${selectSql},
+           ROW_NUMBER() OVER (ORDER BY order_key, created_at, row_id) AS display_index
+    FROM "${tableName}"
+    ${whereClause}
+    ORDER BY order_key, created_at, row_id
+  `;
+
+  const rows = db.prepare(query).all();
 
   const dataRows = rows.map((row) => {
-    const record = { row_number: row.row_number };
-    columns.forEach((column, index) => {
-      record[`column_${index + 1}`] = row[column.sql_name] ?? null;
+    const values = {};
+    columns.forEach((column) => {
+      values[column.column_id || column.sql_name] = row[column.sql_name] ?? null;
     });
-    return record;
+
+    return {
+      row_id: row.row_id,
+      display_index: Number(row.display_index),
+      order_key: Number(row.order_key),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      values,
+    };
   });
 
+  const sheetRecord = db.prepare('SELECT updated_at FROM sheets WHERE id = ?').get(sheetId);
+  const view = buildViewSpec(sheetId, sheetRecord, filters);
+
   return {
-    data: columns.length > 0 ? [headerRow, ...dataRows] : [],
-    filters: filters
+    columns,
+    rows: dataRows,
+    filters,
+    view,
   };
 };
 
@@ -1274,7 +1520,21 @@ const removeColumn = (sheetId, columnIndex) => {
 
   const tableName = ensureSheetTable(sheetId);
   db.prepare(`ALTER TABLE "${tableName}" DROP COLUMN "${column.sql_name}"`).run();
-  // No need to update sheet_columns table - column info now comes from PRAGMA
+  db.prepare('DELETE FROM sheet_columns WHERE sheet_id = ? AND column_index = ?').run(sheetId, columnIndex);
+
+  const remaining = db
+    .prepare('SELECT column_index FROM sheet_columns WHERE sheet_id = ? ORDER BY column_index ASC')
+    .all(sheetId);
+
+  remaining.forEach((col, idx) => {
+    if (col.column_index !== idx) {
+      db.prepare('UPDATE sheet_columns SET column_index = ? WHERE sheet_id = ? AND column_index = ?').run(
+        idx,
+        sheetId,
+        col.column_index
+      );
+    }
+  });
 };
 
 const createSheet = (spreadsheetId, name, columns = null) => {
@@ -1455,56 +1715,41 @@ app.post('/sheets/:id/import-data', (req, res) => {
     return res.status(404).json({ error: 'Sheet not found.' });
   }
 
-  const tableName = tableNameForSheet(req.params.id);
-
   try {
     // Start transaction for performance
-    const insertMany = db.transaction((headers, rows) => {
-      // Sanitize headers to create SQL column names
-      const usedNames = new Set();
-      const sqlColumns = headers.map((header, idx) => {
-        let sqlName = sanitizeSqlIdentifier(header, `column_${idx + 1}`);
-        // Handle duplicates
-        let finalName = sqlName;
-        let suffix = 1;
-        while (usedNames.has(finalName)) {
-          finalName = `${sqlName}_${suffix++}`;
-        }
-        usedNames.add(finalName);
-        return finalName;
+    const insertMany = db.transaction((headers, dataRows) => {
+      ensureSheetTable(req.params.id);
+      ensureColumnCount(req.params.id, headers.length);
+
+      headers.forEach((header, index) => {
+        renameColumn(req.params.id, index, header);
       });
 
-      // Create columns from headers
-      const existingCols = db.prepare(`PRAGMA table_info("${tableName}")`).all();
-      const existingColNames = new Set(existingCols.map(c => c.name));
+      const tableName = tableNameForSheet(req.params.id);
+      const columns = getSheetColumns(req.params.id);
+      const columnSql = columns.map((col) => `"${col.sql_name}"`).join(', ');
+      const placeholderSegment = columns.map(() => '?').join(', ');
 
-      sqlColumns.forEach(colName => {
-        if (!existingColNames.has(colName)) {
-          db.prepare(`ALTER TABLE "${tableName}" ADD COLUMN "${colName}" TEXT`).run();
-        }
+      const baseOrderKey =
+        db.prepare(`SELECT COALESCE(MAX(order_key), 0) AS maxKey FROM "${tableName}"`).get()?.maxKey ?? 0;
+
+      dataRows.forEach((rowValues, rowIdx) => {
+        const timestamp = now();
+        const rowId = randomUUID();
+        const orderKey = Number(baseOrderKey) + rowIdx + 1;
+        const normalizedValues = columns.map((_, colIdx) => {
+          const value = rowValues[colIdx];
+          return value !== undefined && value !== null && `${value}`.length > 0 ? value : null;
+        });
+
+        const insertColumnsSegment = columns.length > 0 ? `, ${columnSql}` : '';
+        const insertValuesSegment = columns.length > 0 ? `, ${placeholderSegment}` : '';
+        const insertSql = `INSERT INTO "${tableName}" (row_id, order_key, created_at, updated_at${insertColumnsSegment}) VALUES (?, ?, ?, ?${insertValuesSegment})`;
+
+        db.prepare(insertSql).run(rowId, orderKey, timestamp, timestamp, ...normalizedValues);
       });
 
-      // Insert data rows (NO HEADER ROW - headers are column names now)
-      for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-        const row = rows[rowIdx];
-        const rowNumber = rowIdx + 1;
-
-        // Build values array, using null for missing/empty values
-        const values = [];
-        for (let i = 0; i < sqlColumns.length; i++) {
-          const value = row[i];
-          // Use null for undefined/null/empty string
-          values.push((value !== undefined && value !== null && value !== '') ? value : null);
-        }
-
-        const cols = sqlColumns.map(c => `"${c}"`).join(', ');
-        const placeholders = values.map(() => '?').join(', ');
-
-        const stmt = db.prepare(
-          `INSERT INTO "${tableName}" (row_number, ${cols}) VALUES (?, ${placeholders})`
-        );
-        stmt.run(rowNumber, ...values);
-      }
+      normalizeSheetRows(req.params.id);
     });
 
     insertMany(headers, rows);
@@ -1572,28 +1817,73 @@ app.post('/sheets/:id/table', (req, res) => {
 });
 
 app.post('/sheets/:id/cells', (req, res) => {
-  const { row, col, value } = req.body ?? {};
-  const rowNumber = Number(row);
-  const colNumber = Number(col);
-  if (!Number.isInteger(rowNumber) || rowNumber < 0 || !Number.isInteger(colNumber) || colNumber < 0) {
-    return res.status(400).json({ error: 'row and col must be non-negative integers.' });
+  const { rowId, displayIndex, columnIndex, value, isHeader = false, viewHash } = req.body ?? {};
+
+  if (!Number.isInteger(Number(columnIndex)) || Number(columnIndex) < 0) {
+    return res.status(400).json({ error: 'columnIndex must be a non-negative integer.' });
   }
 
-  const sheet = db.prepare('SELECT spreadsheet_id FROM sheets WHERE id = ?').get(req.params.id);
+  const sheet = db.prepare('SELECT spreadsheet_id, updated_at FROM sheets WHERE id = ?').get(req.params.id);
   if (!sheet) {
     return res.status(404).json({ error: 'Sheet not found.' });
   }
 
-  ensureColumnCount(req.params.id, colNumber + 1);
+  ensureSheetTable(req.params.id);
+  ensureColumnCount(req.params.id, Number(columnIndex) + 1);
 
-  if (rowNumber === 0) {
-    renameColumn(req.params.id, colNumber, typeof value === 'string' ? value : '');
-  } else {
-    setCellValue(req.params.id, rowNumber, colNumber, typeof value === 'string' ? value : '');
+  const filters = activeFilters.get(req.params.id) || [];
+  const currentView = buildViewSpec(req.params.id, sheet, filters);
+  if (viewHash && viewHash !== currentView.hash) {
+    return res.status(409).json({ error: 'VIEW_STALE', view: currentView });
+  }
+
+  let finalRowId = typeof rowId === 'string' && rowId.trim().length > 0 ? rowId : null;
+
+  try {
+    if (isHeader) {
+      renameColumn(req.params.id, Number(columnIndex), typeof value === 'string' ? value : '');
+    } else {
+      finalRowId = setCellValue(req.params.id, {
+        rowId: finalRowId,
+        displayIndex: Number.isInteger(displayIndex) ? Number(displayIndex) : null,
+        columnIndex: Number(columnIndex),
+        value: typeof value === 'string' ? value : '',
+      });
+    }
+  } catch (error) {
+    console.error('Failed to sync cell', error);
+    return res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
   }
 
   touchSheet(req.params.id);
-  res.status(204).end();
+
+  const updatedSheet = db.prepare('SELECT updated_at FROM sheets WHERE id = ?').get(req.params.id);
+  const nextView = buildViewSpec(req.params.id, updatedSheet, filters);
+
+  let displayPosition = null;
+  if (!isHeader && finalRowId) {
+    const tableName = tableNameForSheet(req.params.id);
+    const record = db
+      .prepare(
+        `SELECT display_index FROM (
+           SELECT row_id,
+                  ROW_NUMBER() OVER (ORDER BY order_key, created_at, row_id) AS display_index
+           FROM "${tableName}"
+           WHERE deleted_at IS NULL
+         ) WHERE row_id = ?`
+      )
+      .get(finalRowId);
+
+    if (record && Number.isInteger(record.display_index)) {
+      displayPosition = Number(record.display_index) - 1;
+    }
+  }
+
+  res.json({
+    rowId: finalRowId,
+    displayIndex: displayPosition,
+    view: nextView,
+  });
 });
 
 app.get('/sheets/:id/table', (req, res) => {
@@ -1648,7 +1938,7 @@ app.delete('/sheets/:id/columns/:index', (req, res) => {
 
 // Anthropic Chat Handler
 const handleAnthropicChat = async (req, res, context, streamer = null) => {
-  const { trimmedQuery, selectedCells, userMessage, sheetMetas, sheetSummary, sheetReferenceList, activeSheet } = context;
+  const { trimmedQuery, selection, userMessage, sheetMetas, sheetSummary, sheetReferenceList, activeSheet } = context;
 
   const systemInstructionText = [
     'You are an assistant helping users work with spreadsheet data.',
@@ -1660,7 +1950,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
     '**COLUMN TYPES**: Be careful with column types - columns are often stored as TEXT even when they contain numbers. When performing numeric operations (comparisons, math, sorting), use CAST to convert to the appropriate type. Examples: CAST("grade" AS INTEGER), CAST("price" AS REAL), ORDER BY CAST("year" AS INTEGER). This is especially important for filtering, sorting, and aggregations.',
     'Use `mutateSheetSql` for changing spreadsheet data (UPDATE, INSERT, ALTER TABLE ... ADD COLUMN) or creating new sheets with computed data (CREATE TABLE AS). For CREATE TABLE AS, the sheet parameter can reference any existing sheet (it\'s ignored), and use: CREATE TABLE context.spreadsheet.sheets["NewSheetName"] AS SELECT ... FROM context.spreadsheet.sheets["SourceSheet"]. This creates a new sheet with all computed data in a single SQL operation - perfect for JOINs and combining AI() functions with GROUP BY aggregations. Example: CREATE TABLE context.spreadsheet.sheets["Product Summary"] AS SELECT product, AVG(score), AI(\'Summarize: \' || GROUP_CONCAT(review)) FROM context.spreadsheet.sheets["Reviews"] GROUP BY product.',
     '**VERIFICATION STRATEGY**: After completing data operations (CREATE TABLE, UPDATE, INSERT, etc.), ALWAYS verify that you accomplished what you intended. Do your best to perform a full verification - for example, if a column shouldn\'t have null values or negative values, check for those. Also look at a few sample rows to understand what was actually created. If results are incorrect, investigate and fix the issue. Never declare success without verification.',
-    'Use `deleteRows` when the user explicitly asks to delete or remove rows from the spreadsheet. You can delete by specific row numbers (e.g., rowNumbers: [5, 7, 9]) or by condition (e.g., condition: \'"grade" < 10\'). Row numbers stay consistent - if row 7 is deleted, the UI shows rows 5, 6, 8 (not renumbered).',
+    'Use `deleteRows` when the user explicitly asks to delete or remove rows from the spreadsheet. You can delete by specific row identifiers (e.g., rowIds: ["r_123", "r_456"]) or by condition (e.g., condition: \'"grade" < 10\'). Row headers always reflow 1..N for the current view, so avoid reasoning about static row numbers.',
     'Use `highlights_add` to visually mark important cells or ranges when the user asks to highlight, mark, emphasize, or draw attention to specific data. Two approaches: (1) Use "range" for specific cell locations in A1 notation (e.g., "B2", "A1:C5"). (2) Use "condition" with a SQL boolean expression to highlight cells matching criteria (e.g., condition: \'"grade" > 20\', condition: \'"status" = \\\'active\\\'\').',
     'Multiple highlights can be layered! To highlight different values in different colors, call highlights_add multiple times with different colors. Example: highlights_add(condition: \'"grade" > 25\', color: "green") then highlights_add(condition: \'"grade" < 10\', color: "red").',
     'For data-based highlighting: Query with executeSheetSql to analyze data, then use highlights_add with a condition. Example: To highlight highest and lowest grades in different colors, query for thresholds, then call highlights_add twice with different conditions and colors.',
@@ -1674,7 +1964,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
     'AI() examples: (1) Filtering: SELECT * FROM reviews WHERE AI(\'Is this review positive? Review: \' || "review", \'boolean\') = \'true\'. (2) Aggregation: SELECT AI(\'Summarize: \' || GROUP_CONCAT("review", \', \')) FROM reviews GROUP BY product_id. (3) Categorization: SELECT review, AI(\'Categorize: \' || review, \'["bug","feature","praise","complaint"]\') as category FROM feedback. (4) Window function: SELECT review, AI(\'Rate 1-5: \' || review || \'. Context: \' || GROUP_CONCAT(review) OVER (PARTITION BY product_id), \'["1","2","3","4","5"]\') FROM reviews. The AI function is synchronous and makes real API calls, so use it judiciously.',
     'If a tool call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
     'When calling a tool, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
-    'Each sheet table contains a `row_number` column that corresponds to the spreadsheet row number. Always SELECT row_number when you need to highlight cells based on query results. Summarize tool results for the user instead of pasting large tables verbatim.',
+    'Each sheet table exposes a stable `row_id` column plus view-specific display indices. Always use `row_id` when you need to reference or mutate specific rows (for example, SELECT row_id, ...). Summarize tool results for the user instead of pasting large tables verbatim.',
   ].join('\n\n');
 
   // Build messages array from chat history
@@ -1686,13 +1976,30 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
         text = `${text}\n\nCurrently viewing sheet: "${activeSheet.name}" (sheetId: ${activeSheet.id})`;
       }
 
-      const contextEntries =
-        selectedCells && typeof selectedCells === 'object'
-          ? Object.entries(selectedCells)
-          : [];
+      const contextEntries = Array.isArray(selection?.cells) ? selection.cells : [];
       if (contextEntries.length > 0) {
-        const cellText = contextEntries.map(([key, value]) => `${key}: ${value}`).join('\n');
+        const cellText = contextEntries
+          .map((cell) => {
+            const metaParts = [];
+            if (cell.rowId) metaParts.push(`row_id=${cell.rowId}`);
+            if (cell.columnId) metaParts.push(`col_id=${cell.columnId}`);
+            const metaSuffix = metaParts.length > 0 ? ` [${metaParts.join(', ')}]` : '';
+            return `${cell.coord}${metaSuffix}: ${cell.value}`;
+          })
+          .join('\n');
         text = `${text}\n\nSelected cell context:\n${cellText}`;
+      }
+
+      if (selection?.rowIds && selection.rowIds.length > 0) {
+        text = `${text}\n\nSelection row_ids: ${selection.rowIds.join(', ')}`;
+      }
+
+      if (selection?.columnIds && selection.columnIds.length > 0) {
+        text = `${text}\nSelection column_ids: ${selection.columnIds.join(', ')}`;
+      }
+
+      if (selection?.view?.hash) {
+        text = `${text}\nView hash: ${selection.view.hash} (revision ${selection.view.revision ?? 'unknown'})`;
       }
 
       if (sheetSummary) {
@@ -1754,7 +2061,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
     {
       name: 'deleteRows',
       description:
-        'Delete specific rows from the spreadsheet. Row numbers remain consistent after deletion (gaps are preserved). Use this when the user explicitly asks to delete or remove rows.',
+        'Delete specific rows from the spreadsheet using durable row identifiers. Use this when the user explicitly asks to delete or remove rows.',
       input_schema: {
         type: 'object',
         properties: {
@@ -1764,18 +2071,18 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
               ? `Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id). Sheets: ${sheetReferenceList}.`
               : 'Reference to the sheet (use context.spreadsheet.sheets["<Sheet Name>"] or the sheet id).',
           },
-          rowNumbers: {
+          rowIds: {
             type: 'array',
             items: {
-              type: 'integer',
+              type: 'string',
             },
             description:
-              'Array of specific row numbers to delete (e.g., [1, 3, 5]). Mutually exclusive with condition.',
+              'Array of specific row IDs to delete (use values returned in selections). Mutually exclusive with condition.',
           },
           condition: {
             type: 'string',
             description:
-              'SQL boolean expression defining which rows to delete. Use double quotes for column names. Examples: \'"grade" < 10\', \'"status" = \\\'inactive\\\'\', \'"revenue" = 0\'. Mutually exclusive with rowNumbers.',
+              'SQL boolean expression defining which rows to delete. Use double quotes for column names. Examples: \'"grade" < 10\', \'"status" = \\\'inactive\\\'\', \'"revenue" = 0\'. Mutually exclusive with rowIds.',
           },
         },
         required: ['sheet'],
@@ -2149,35 +2456,37 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
               throw new Error('Valid sheet reference is required for deleteRows.');
             }
 
-            const rowNumbers = toolInput.rowNumbers;
+            const rowIds = toolInput.rowIds;
             const condition = toolInput.condition;
 
-            if (!rowNumbers && !condition) {
-              throw new Error('Either "rowNumbers" or "condition" is required for deleteRows.');
+            if (!rowIds && !condition) {
+              throw new Error('Either "rowIds" or "condition" is required for deleteRows.');
             }
-            if (rowNumbers && condition) {
-              throw new Error('Cannot specify both "rowNumbers" and "condition".');
+            if (rowIds && condition) {
+              throw new Error('Cannot specify both "rowIds" and "condition".');
             }
 
             const tableName = tableNameForSheet(sheetMeta.id);
             let deletedCount = 0;
 
-            if (rowNumbers && Array.isArray(rowNumbers)) {
-              // Delete specific row numbers
-              const validRows = rowNumbers.filter(num => typeof num === 'number' && num > 0);
-              if (validRows.length === 0) {
-                throw new Error('No valid row numbers provided.');
+            if (rowIds && Array.isArray(rowIds)) {
+              // Delete specific row ids
+              const validIds = rowIds.filter((id) => typeof id === 'string' && id.trim().length > 0);
+              if (validIds.length === 0) {
+                throw new Error('No valid row ids provided.');
               }
 
-              const placeholders = validRows.map(() => '?').join(', ');
-              const deleteSql = `DELETE FROM "${tableName}" WHERE row_number IN (${placeholders})`;
-              const result = db.prepare(deleteSql).run(...validRows);
+              const placeholders = validIds.map(() => '?').join(', ');
+              const deleteSql = `UPDATE "${tableName}" SET deleted_at = ?, updated_at = ? WHERE row_id IN (${placeholders})`;
+              const timestamp = now();
+              const result = db.prepare(deleteSql).run(timestamp, timestamp, ...validIds);
               deletedCount = result.changes || 0;
             } else if (condition) {
-              // Delete rows matching condition
-              const deleteSql = `DELETE FROM "${tableName}" WHERE ${condition}`;
+              // Soft delete rows matching condition
+              const deleteSql = `UPDATE "${tableName}" SET deleted_at = ?, updated_at = ? WHERE ${condition}`;
+              const timestamp = now();
               try {
-                const result = db.prepare(deleteSql).run();
+                const result = db.prepare(deleteSql).run(timestamp, timestamp);
                 deletedCount = result.changes || 0;
               } catch (sqlError) {
                 throw new Error(`Invalid delete condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
@@ -2185,13 +2494,14 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
             }
 
             touchSheet(sheetMeta.id);
+            normalizeSheetRows(sheetMeta.id);
 
             toolResultContent = JSON.stringify({
               ok: true,
               sheetId: sheetMeta.id,
               sheetName: sheetMeta.name,
               deletedCount,
-              rowNumbers: rowNumbers,
+              rowIds: rowIds,
               condition: condition,
             });
 
@@ -2201,7 +2511,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
               sheetId: sheetMeta.id,
               sheetName: sheetMeta.name,
               deletedCount,
-              rowNumbers: rowNumbers,
+              rowIds: rowIds,
               condition: condition,
               status: 'ok',
               reference: sheetReferenceLabel,
@@ -2221,14 +2531,14 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
               throw new Error('Cannot specify both "range" and "condition".');
             }
 
-            let rowNumbers = undefined;
-            // Execute condition to get matching row numbers
+            let rowIds = undefined;
+            // Execute condition to get matching row ids
             if (condition) {
               const tableName = tableNameForSheet(sheetMeta.id);
-              const querySql = `SELECT row_number FROM "${tableName}" WHERE ${condition}`;
+              const querySql = `SELECT row_id FROM "${tableName}" WHERE ${condition}`;
               try {
                 const rows = readOnlyDb.prepare(querySql).all();
-                rowNumbers = rows.map(row => row.row_number);
+                rowIds = rows.map((row) => row.row_id);
               } catch (sqlError) {
                 throw new Error(`Invalid highlight condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
               }
@@ -2246,7 +2556,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
               sheetName: sheetMeta.name,
               range: range ? range.trim() : undefined,
               condition: condition ? condition.trim() : undefined,
-              rowNumbers: rowNumbers,
+              rowIds: rowIds,
               color: finalColor,
               message: message,
             });
@@ -2258,7 +2568,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
               sheetName: sheetMeta.name,
               range: range ? range.trim() : undefined,
               condition: condition ? condition.trim() : undefined,
-              rowNumbers: rowNumbers,
+              rowIds: rowIds,
               color: finalColor,
               message: message,
               status: 'ok',
@@ -2527,7 +2837,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
             sql: isNonSqlTool ? undefined : trimmedSql,
             range: isHighlight ? toolInput.range : undefined,
             condition: isFilter || isDelete ? toolInput.condition : undefined,
-            rowNumbers: isDelete ? toolInput.rowNumbers : undefined,
+            rowIds: isDelete ? toolInput.rowIds : undefined,
             status: 'error',
             operation: isNonSqlTool ? undefined : (isMutation ? undefined : 'select'),
             error: toolError instanceof Error ? toolError.message : String(toolError),
@@ -2617,7 +2927,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     return res.status(404).json({ error: 'Spreadsheet not found.' });
   }
 
-  const { query, selectedCells, activeSheetId } = req.body ?? {};
+  const { query, selection, activeSheetId } = req.body ?? {};
   if (!query || typeof query !== 'string' || !query.trim()) {
     return res.status(400).json({ error: 'query is required.' });
   }
@@ -2628,7 +2938,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
   const streamer = allowStreaming && isStreamRequest ? createSseStreamer(res) : null;
 
   const trimmedQuery = query.trim();
-  const rangeLabel = computeRangeLabel(selectedCells || {});
+  const rangeLabel = computeRangeLabel(selection);
   const userMessage = addChatMessage(req.params.id, 'user', trimmedQuery, rangeLabel);
 
   const { sheets: sheetMetas, summaryText: sheetSummary } = buildSheetMetadataSummary(req.params.id);
@@ -2647,7 +2957,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
   if (AI_PROVIDER === 'anthropic') {
     return await handleAnthropicChat(req, res, {
       trimmedQuery,
-      selectedCells,
+      selection,
       userMessage,
       sheetMetas,
       sheetSummary,
@@ -2674,7 +2984,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     'IMPORTANT: When passing function parameters, ensure all string values are properly escaped. Do not include unescaped quotes or special characters in function parameters. Keep parameter content concise to avoid exceeding token limits.',
     'If a function call fails, analyze the error and retry with a different approach (e.g., try CAST for numeric comparisons, use LOWER() for case-insensitive text matching). Make 2-3 attempts before giving up.',
     'When calling a function, provide the `sheet` argument using the relative reference syntax (for example, sheet: context.spreadsheet.sheets["Term 1"]) or the sheet id when necessary.',
-    'Each sheet table contains a `row_number` column that corresponds to the spreadsheet row number. Always SELECT row_number when you need to highlight cells based on query results. Summarize tool results for the user instead of pasting large tables verbatim.',
+    'Each sheet table exposes a stable `row_id` column plus view-specific display indices. Always use `row_id` when you need to reference or mutate specific rows (for example, SELECT row_id, ...). Summarize tool results for the user instead of pasting large tables verbatim.',
   ].join('\n\n');
 
   const contents = listChatMessages(req.params.id).map((message) => {
@@ -2685,12 +2995,17 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
         text = `${text}\n\nCurrently viewing sheet: "${activeSheet.name}" (sheetId: ${activeSheet.id})`;
       }
 
-      const contextEntries =
-        selectedCells && typeof selectedCells === 'object'
-          ? Object.entries(selectedCells)
-          : [];
+      const contextEntries = Array.isArray(selection?.cells) ? selection.cells : [];
       if (contextEntries.length > 0) {
-        const cellText = contextEntries.map(([key, value]) => `${key}: ${value}`).join('\n');
+        const cellText = contextEntries
+          .map((cell) => {
+            const metaParts = [];
+            if (cell.rowId) metaParts.push(`row_id=${cell.rowId}`);
+            if (cell.columnId) metaParts.push(`col_id=${cell.columnId}`);
+            const metaSuffix = metaParts.length > 0 ? ` [${metaParts.join(', ')}]` : '';
+            return `${cell.coord}${metaSuffix}: ${cell.value}`;
+          })
+          .join('\n');
         text = `${text}\n\nSelected cell context:\n${cellText}`;
       }
 
@@ -3076,14 +3391,14 @@ const buildRequestPayload = (conversationContents) => ({
             throw new Error('Cannot specify both "range" and "condition".');
           }
 
-          let rowNumbers = undefined;
-          // Execute condition to get matching row numbers
+          let rowIds = undefined;
+          // Execute condition to get matching row ids
           if (condition) {
             const tableName = tableNameForSheet(sheetMeta.id);
-            const querySql = `SELECT row_number FROM "${tableName}" WHERE ${condition}`;
+            const querySql = `SELECT row_id FROM "${tableName}" WHERE ${condition}`;
             try {
               const rows = readOnlyDb.prepare(querySql).all();
-              rowNumbers = rows.map(row => row.row_number);
+              rowIds = rows.map((row) => row.row_id);
             } catch (sqlError) {
               throw new Error(`Invalid highlight condition: ${sqlError instanceof Error ? sqlError.message : String(sqlError)}`);
             }
@@ -3101,7 +3416,7 @@ const buildRequestPayload = (conversationContents) => ({
             sheetName: sheetMeta.name,
             range: range ? range.trim() : undefined,
             condition: condition ? condition.trim() : undefined,
-            rowNumbers: rowNumbers,
+            rowIds,
             color: finalColor,
             message: message,
             sheetReference: sheetReferenceLabel,
@@ -3114,7 +3429,7 @@ const buildRequestPayload = (conversationContents) => ({
             sheetName: sheetMeta.name,
             range: range ? range.trim() : undefined,
             condition: condition ? condition.trim() : undefined,
-            rowNumbers: rowNumbers,
+            rowIds,
             color: finalColor,
             message: message,
             status: 'ok',
@@ -3353,7 +3668,7 @@ app.post('/ai/gemini', async (req, res) => {
     return res.status(400).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
   }
 
-  const { query, selectedCells } = req.body ?? {};
+  const { query, selection } = req.body ?? {};
   if (!query || typeof query !== 'string') {
     return res.status(400).json({ error: 'query is required.' });
   }
@@ -3361,9 +3676,10 @@ app.post('/ai/gemini', async (req, res) => {
   const promptParts = [];
   promptParts.push(query.trim());
 
-  if (selectedCells && typeof selectedCells === 'object' && Object.keys(selectedCells).length > 0) {
-    const cellText = Object.entries(selectedCells)
-      .map(([key, value]) => `${key}: ${value}`)
+  const selectionCells = Array.isArray(selection?.cells) ? selection.cells : [];
+  if (selectionCells.length > 0) {
+    const cellText = selectionCells
+      .map((cell) => `${cell.coord}: ${cell.value}`)
       .join('\n');
     promptParts.push('\nSelected cells:\n' + cellText);
   }

@@ -4,11 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Maximize2, Zap } from "lucide-react";
+import type { SelectionSnapshot } from "@/integrations/database";
 
 interface CoordinateDisplayProps {
   selection: CellSelection;
   cellContent?: string;
-  selectedCells?: { [key: string]: string };
+  selectionSnapshot?: SelectionSnapshot | null;
 }
 
 const getColumnLabel = (colIndex: number): string => {
@@ -61,7 +62,7 @@ const formatSelectionReference = (selection: CellSelection): string => {
   return `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
 };
 
-export const CoordinateDisplay = ({ selection, cellContent, selectedCells }: CoordinateDisplayProps) => {
+export const CoordinateDisplay = ({ selection, cellContent, selectionSnapshot }: CoordinateDisplayProps) => {
   const displayText = formatSelectionReference(selection);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isQuickLookOpen, setIsQuickLookOpen] = useState(false);
@@ -76,8 +77,8 @@ export const CoordinateDisplay = ({ selection, cellContent, selectedCells }: Coo
                        selection.type === 'cell';
 
   // Get combined text from all selected cells
-  const selectedText = selectedCells
-    ? Object.values(selectedCells).join('\n')
+  const selectedText = selectionSnapshot && selectionSnapshot.cells.length > 0
+    ? selectionSnapshot.cells.map(cell => cell.value).filter(Boolean).join('\n')
     : (cellContent || '');
 
   // Fetch approximate token count when selection changes

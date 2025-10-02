@@ -1,5 +1,14 @@
 import { backendConfig } from '@/config/backend';
-import type { ChatMessage, ChatStreamEvent, DataClient, SheetRecord, SheetTableData, SpreadsheetRecord } from './types';
+import type {
+  ChatMessage,
+  ChatStreamEvent,
+  DataClient,
+  SelectionSnapshot,
+  SheetRecord,
+  SheetTableData,
+  SheetViewState,
+  SpreadsheetRecord,
+} from './types';
 
 const BASE_URL = backendConfig.sqliteApiBaseUrl.replace(/\/$/, '');
 
@@ -120,11 +129,33 @@ export const sqliteDataClient: DataClient = {
     });
   },
 
-  async syncCell(sheetId: string, row: number, col: number, value: string): Promise<void> {
-    await request(`/sheets/${sheetId}/cells`, {
-      method: 'POST',
-      body: { row, col, value },
-    });
+  async syncCell(
+    sheetId: string,
+    payload: {
+      rowId?: string | null;
+      displayIndex?: number | null;
+      columnIndex: number;
+      value: string;
+      isHeader?: boolean;
+      viewHash?: string;
+    }
+  ): Promise<{ rowId: string | null; displayIndex: number | null; view: SheetViewState }> {
+    const data = await request<{ rowId: string | null; displayIndex: number | null; view: SheetViewState }>(
+      `/sheets/${sheetId}/cells`,
+      {
+        method: 'POST',
+        body: {
+          rowId: payload.rowId ?? null,
+          displayIndex: payload.displayIndex ?? null,
+          columnIndex: payload.columnIndex,
+          value: payload.value,
+          isHeader: Boolean(payload.isHeader),
+          viewHash: payload.viewHash ?? null,
+        },
+      }
+    );
+
+    return data;
   },
 
   async importBulkData(sheetId: string, headers: string[], rows: string[][]): Promise<void> {
@@ -146,7 +177,7 @@ export const sqliteDataClient: DataClient = {
 
   async sendChatMessage(
     spreadsheetId: string,
-    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
+    payload: { query: string; selection?: SelectionSnapshot | null; activeSheetId?: string }
   ): Promise<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }> {
     const data = await request<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }>(
       `/spreadsheets/${spreadsheetId}/chat`,
@@ -164,7 +195,7 @@ export const sqliteDataClient: DataClient = {
 
   async *sendChatMessageStream(
     spreadsheetId: string,
-    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
+    payload: { query: string; selection?: SelectionSnapshot | null; activeSheetId?: string }
   ): AsyncGenerator<ChatStreamEvent> {
     const response = await fetch(`${BASE_URL}/spreadsheets/${spreadsheetId}/chat?stream=true`, {
       method: 'POST',

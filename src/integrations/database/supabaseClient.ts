@@ -1,5 +1,12 @@
 import { supabase } from '@/integrations/supabase/client';
-import type { ChatMessage, DataClient, SheetRecord, SheetTableData, SpreadsheetRecord } from './types';
+import type {
+  ChatMessage,
+  DataClient,
+  SheetRecord,
+  SheetTableData,
+  SheetViewState,
+  SpreadsheetRecord,
+} from './types';
 
 const handleError = (error: unknown) => {
   if (error instanceof Error) {
@@ -113,30 +120,58 @@ export const supabaseDataClient: DataClient = {
     if (error) handleError(error);
   },
 
-  async syncCell(sheetId: string, row: number, col: number, value: string): Promise<void> {
+  async syncCell(
+    sheetId: string,
+    payload: {
+      rowId?: string | null;
+      displayIndex?: number | null;
+      columnIndex: number;
+      value: string;
+      isHeader?: boolean;
+      viewHash?: string;
+    }
+  ): Promise<{ rowId: string | null; displayIndex: number | null; view: SheetViewState }> {
     const { error } = await supabase.functions.invoke('manage-sheet-data', {
       body: {
         action: 'update_cell',
         sheetId,
-        row,
-        col,
-        value,
+        row: payload.isHeader ? 0 : (Number(payload.displayIndex) ?? 0) + 1,
+        col: payload.columnIndex,
+        value: payload.value,
       },
     });
 
     if (error) handleError(error);
+
+    return {
+      rowId: payload.rowId ?? null,
+      displayIndex: payload.displayIndex ?? null,
+      view: {
+        spec: { filters: [], sort: [], hiddenCols: [] },
+        hash: 'supabase',
+        revision: new Date().toISOString(),
+      },
+    };
   },
 
   async importBulkData(sheetId: string, headers: string[], rows: string[][]): Promise<void> {
     // Bulk import not supported in Supabase mode - fall back to individual syncs
     for (let col = 0; col < headers.length; col++) {
-      await this.syncCell(sheetId, 0, col, headers[col]);
+      await this.syncCell(sheetId, {
+        columnIndex: col,
+        value: headers[col],
+        isHeader: true,
+      });
     }
     for (let row = 0; row < rows.length; row++) {
       for (let col = 0; col < rows[row].length; col++) {
         const value = rows[row][col];
         if (value) {
-          await this.syncCell(sheetId, row + 1, col, value);
+          await this.syncCell(sheetId, {
+            displayIndex: row,
+            columnIndex: col,
+            value,
+          });
         }
       }
     }

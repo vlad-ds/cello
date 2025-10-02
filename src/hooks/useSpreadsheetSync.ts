@@ -16,17 +16,30 @@ export const useSpreadsheetSync = () => {
     }
   }, []);
 
-  const syncCell = useCallback(async (sheetId: string, row: number, col: number, value: string) => {
-    setIsLoading(true);
-    try {
-      await dataClient.syncCell(sheetId, row, col, value);
-    } catch (error) {
-      console.error('Error syncing cell:', error);
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const syncCell = useCallback(
+    async (
+      sheetId: string,
+      payload: {
+        rowId?: string | null;
+        displayIndex?: number | null;
+        columnIndex: number;
+        value: string;
+        isHeader?: boolean;
+        viewHash?: string;
+      }
+    ) => {
+      setIsLoading(true);
+      try {
+        return await dataClient.syncCell(sheetId, payload);
+      } catch (error) {
+        console.error('Error syncing cell:', error);
+        throw error;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    []
+  );
 
   const loadSheetData = useCallback(async (sheetId: string) => {
     setIsLoading(true);

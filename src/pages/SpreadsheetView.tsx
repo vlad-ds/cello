@@ -18,6 +18,7 @@ import {
   type SheetTableData,
   type CellHighlight,
   type FilterCondition,
+  type SelectionSnapshot,
 } from "@/integrations/database";
 import { useSpreadsheetSync } from "@/hooks/useSpreadsheetSync";
 import { CellData, SheetData, CellSelection, Action } from "./Index";
@@ -94,26 +95,10 @@ const SpreadsheetView = () => {
 
   // Calculate effective row count: when filters are active, only render rows with data
   // Otherwise, calculate actual row count from cells
+  const visibleRowCount = activeSheet ? activeSheet.rowOrder.length : 0;
   const effectiveRowCount = activeSheet?.hasActiveFilters
-    ? (() => {
-        const rowsWithData = new Set<number>();
-        Object.keys(activeSheet.cells).forEach(key => {
-          const row = parseInt(key.split('-')[0]);
-          if (!isNaN(row)) rowsWithData.add(row);
-        });
-        return rowsWithData.size;
-      })()
-    : (() => {
-        if (!activeSheet) return rowCount;
-        // Get the maximum row number from cells
-        const rowNumbers = Object.keys(activeSheet.cells).map(key => {
-          const row = parseInt(key.split('-')[0]);
-          return isNaN(row) ? 0 : row;
-        });
-        const maxRow = rowNumbers.length > 0 ? Math.max(...rowNumbers) : 0;
-        // Add buffer rows for adding new data
-        return Math.max(maxRow + 10, rowCount);
-      })();
+    ? visibleRowCount
+    : Math.max(visibleRowCount + 10, rowCount);
 
   const toCellString = (value: unknown) => {
     if (value === null || value === undefined) return '';
@@ -127,14 +112,7 @@ const SpreadsheetView = () => {
 
   // Calculate actual data row count (excluding empty rows)
   const dataRowCount = activeSheet ? (() => {
-    const rowsWithData = new Set<number>();
-    Object.keys(activeSheet.cells).forEach(key => {
-      const row = parseInt(key.split('-')[0]);
-      if (!isNaN(row) && toCellString(activeSheet.cells[key]).trim()) {
-        rowsWithData.add(row);
-      }
-    });
-    return rowsWithData.size;
+    return activeSheet.rowOrder.length;
   })() : 0;
 
   useEffect(() => {
@@ -210,7 +188,7 @@ const SpreadsheetView = () => {
             sheetData = await loadSheetData(sheet.id); // Try loading again
           }
           
-          const { cells, columnHeaders, hasActiveFilters, displayRowNumbers } = transformTableDataToSheetState(sheetData);
+          const { cells, columnHeaders, columnMeta, rowOrder, hasActiveFilters, view } = transformTableDataToSheetState(sheetData);
 
           loadedSheets.push({
             id: sheet.id,
@@ -218,7 +196,9 @@ const SpreadsheetView = () => {
             cells,
             columnHeaders,
             hasActiveFilters,
-            displayRowNumbers
+            rowOrder,
+            columnMeta,
+            view
           });
 
           // Track filters from server
@@ -239,7 +219,10 @@ const SpreadsheetView = () => {
               id: sheet.id,
               name: sheet.name,
               cells: {},
-              columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+              columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"],
+              rowOrder: [],
+              columnMeta: [],
+              view: undefined
             });
           } catch (createError) {
             console.error(`Failed to create dynamic table for sheet ${sheet.id}:`, createError);
@@ -248,7 +231,10 @@ const SpreadsheetView = () => {
               id: sheet.id,
               name: sheet.name,
               cells: {},
-              columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+              columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"],
+              rowOrder: [],
+              columnMeta: [],
+              view: undefined
             });
           }
         }
@@ -276,38 +262,15 @@ const SpreadsheetView = () => {
 
     const gridData: CellData[][] = [];
 
-    if (activeSheet.hasActiveFilters) {
-      // When filters are active, only show rows that have data (already sequential from transform)
-      const rowsWithData = new Set<number>();
-      Object.keys(activeSheet.cells).forEach(key => {
-        const row = parseInt(key.split('-')[0]);
-        if (!isNaN(row)) {
-          rowsWithData.add(row);
-        }
-      });
+    const totalRows = activeSheet.hasActiveFilters ? activeSheet.rowOrder.length : effectiveRowCount;
 
-      const sortedRows = Array.from(rowsWithData).sort((a, b) => a - b);
-
-      sortedRows.forEach(row => {
-        const rowData: CellData[] = [];
-        for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
-          const cellKey = `${row}-${col}`;
-          rowData[col] = {
-            value: activeSheet.cells[cellKey] || ""
-          };
-        }
-        gridData.push(rowData);
-      });
-    } else {
-      // No filters: show all rows up to rowCount
-      for (let row = 0; row < rowCount; row++) {
-        gridData[row] = [];
-        for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
-          const cellKey = `${row}-${col}`;
-          gridData[row][col] = {
-            value: activeSheet.cells[cellKey] || ""
-          };
-        }
+    for (let row = 0; row < totalRows; row++) {
+      gridData[row] = [];
+      for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
+        const cellKey = `${row}-${col}`;
+        gridData[row][col] = {
+          value: activeSheet.cells[cellKey] || ""
+        };
       }
     }
 
@@ -332,6 +295,7 @@ const SpreadsheetView = () => {
         sheetId: activeSheet.id,
         row,
         col,
+        rowId: activeSheet.rowOrder[row] ?? null,
         oldValue: activeSheet.cells[`${row}-${col}`] || "",
         newValue: normalizedValue
       },
@@ -358,9 +322,53 @@ const SpreadsheetView = () => {
 
     // Sync to database (headers use row 0; data rows follow same zero-based index)
     try {
-      await syncCell(activeSheet.id, row + 1, col, normalizedValue);
+      const rowId = activeSheet.rowOrder[row] ?? null;
+      const response = await syncCell(activeSheet.id, {
+        rowId,
+        displayIndex: row,
+        columnIndex: col,
+        value: normalizedValue,
+        viewHash: activeSheet.view?.hash,
+      });
+
+      if (response) {
+        setSheets(prevSheets =>
+          prevSheets.map(sheet => {
+            if (sheet.id !== activeSheet.id) return sheet;
+
+            const nextRowOrder = [...sheet.rowOrder];
+
+            if (response.rowId && typeof response.displayIndex === 'number') {
+              while (nextRowOrder.length <= response.displayIndex) {
+                nextRowOrder.push(null);
+              }
+
+              // Remove duplicates of the same row id
+              for (let idx = 0; idx < nextRowOrder.length; idx++) {
+                if (nextRowOrder[idx] === response.rowId && idx !== response.displayIndex) {
+                  nextRowOrder[idx] = null;
+                }
+              }
+
+              nextRowOrder[response.displayIndex] = response.rowId;
+            } else if (response.rowId) {
+              // Row removed from view
+              const filtered = nextRowOrder.filter(id => id !== response.rowId);
+              nextRowOrder.length = 0;
+              filtered.forEach(id => nextRowOrder.push(id));
+            }
+
+            return {
+              ...sheet,
+              rowOrder: nextRowOrder,
+              view: response.view,
+            };
+          })
+        );
+      }
     } catch (error) {
       console.error('Error syncing cell to database:', error);
+      await refreshActiveSheetFromServer();
     }
   };
 
@@ -396,9 +404,15 @@ const SpreadsheetView = () => {
     
     // Sync header to database by updating the first row (row 0)
     try {
-      await syncCell(activeSheet.id, 0, colIndex, normalizedHeader); // Use row 0 for headers
+      await syncCell(activeSheet.id, {
+        columnIndex: colIndex,
+        value: normalizedHeader,
+        isHeader: true,
+        viewHash: activeSheet.view?.hash,
+      });
     } catch (error) {
       console.error('Error syncing column header to database:', error);
+      await refreshActiveSheetFromServer();
     }
   };
 
@@ -543,11 +557,18 @@ const SpreadsheetView = () => {
 
       await createDynamicTable(newSheet.id, 5); // Start with 5 columns
 
+      const freshData = await loadSheetData(newSheet.id);
+      const { cells, columnHeaders, columnMeta, rowOrder, hasActiveFilters, view } = transformTableDataToSheetState(freshData);
+
       const newSheetData: SheetData = {
         id: newSheet.id,
         name: newSheet.name,
-        cells: {},
-        columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+        cells,
+        columnHeaders,
+        hasActiveFilters,
+        rowOrder,
+        columnMeta,
+        view,
       };
 
       setSheets(prev => [...prev, newSheetData]);
@@ -669,7 +690,7 @@ const SpreadsheetView = () => {
     
     if (action.type === 'cell_update') {
       // Revert cell change
-      const { sheetId, row, col, oldValue } = action.data;
+      const { sheetId, row, col, oldValue, rowId } = action.data;
       setSheets(prevSheets => 
         prevSheets.map(sheet => {
           if (sheet.id === sheetId) {
@@ -685,8 +706,13 @@ const SpreadsheetView = () => {
         })
       );
       
-      // Sync to database using zero-based row index
-      syncCell(sheetId, row + 1, col, oldValue || "").catch(console.error);
+      syncCell(sheetId, {
+        rowId: rowId ?? activeSheet.rowOrder[row] ?? null,
+        displayIndex: row,
+        columnIndex: col,
+        value: oldValue || "",
+        viewHash: activeSheet.view?.hash,
+      }).catch(console.error);
     } else if (action.type === 'column_header_update') {
       const { sheetId, col, oldValue } = action.data;
       setSheets(prevSheets => 
@@ -701,71 +727,116 @@ const SpreadsheetView = () => {
       );
       
       // Sync header to database
-      syncCell(sheetId, 0, col, oldValue || "").catch(console.error); // Use row 0 for headers
+      syncCell(sheetId, {
+        columnIndex: col,
+        value: oldValue || "",
+        isHeader: true,
+        viewHash: activeSheet.view?.hash,
+      }).catch(console.error);
     }
     
     setHistoryIndex(historyIndex - 1);
   };
 
-  const getSelectedCellsContent = () => {
-    if (!activeSheet) return {};
-    
+  const colToLetter = (colIndex: number): string => {
+    let label = '';
+    let num = colIndex + 1;
+    while (num > 0) {
+      num -= 1;
+      label = String.fromCharCode(65 + (num % 26)) + label;
+      num = Math.floor(num / 26);
+    }
+    return label;
+  };
+
+  const getSelectionSnapshot = () => {
+    if (!activeSheet) return null;
+
     const minRow = Math.min(selection.start.row, selection.end.row);
     const maxRow = Math.max(selection.start.row, selection.end.row);
     const minCol = Math.min(selection.start.col, selection.end.col);
     const maxCol = Math.max(selection.start.col, selection.end.col);
-    
-    const selectedCells: { [key: string]: string } = {};
-    
+
+    const cells: SelectionSnapshot['cells'] = [];
+    const rowIdsSet = new Set<string>();
+    const columnIdsSet = new Set<string>();
+
     for (let row = minRow; row <= maxRow; row++) {
+      const rowId = activeSheet.rowOrder[row] ?? null;
+      if (rowId) {
+        rowIdsSet.add(rowId);
+      }
+
       for (let col = minCol; col <= maxCol; col++) {
+        const columnMeta = activeSheet.columnMeta?.[col];
+        if (columnMeta?.column_id) {
+          columnIdsSet.add(columnMeta.column_id);
+        }
+
         const cellKey = `${row}-${col}`;
         const rawValue = activeSheet.cells[cellKey];
         const cellValue = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+
         if (cellValue.trim()) {
-          const columnLetter = String.fromCharCode(65 + col);
-          const readableKey = `${columnLetter}${row + 1}`;
-          selectedCells[readableKey] = cellValue;
+          const coord = `${colToLetter(col)}${row + 1}`;
+          cells.push({
+            coord,
+            value: cellValue,
+            rowId,
+            columnId: columnMeta?.column_id ?? null,
+            rowIndex: row,
+            columnIndex: col,
+          });
         }
       }
     }
-    
-    return selectedCells;
+
+    if (cells.length === 0 && rowIdsSet.size === 0 && columnIdsSet.size === 0) {
+      return null;
+    }
+
+    const startCoord = `${colToLetter(minCol)}${minRow + 1}`;
+    const endCoord = `${colToLetter(maxCol)}${maxRow + 1}`;
+    const coords = minRow === maxRow && minCol === maxCol ? startCoord : `${startCoord}:${endCoord}`;
+
+    return {
+      sheetId: activeSheet.id,
+      sheetName: activeSheet.name,
+      view: activeSheet.view,
+      coords,
+      rowIds: Array.from(rowIdsSet),
+      columnIds: Array.from(columnIdsSet),
+      anchor: 'ids' as const,
+      cells,
+    } satisfies SelectionSnapshot;
   };
 
   const transformTableDataToSheetState = (tableData: SheetTableData | null | undefined) => {
     const cells: { [key: string]: string } = {};
     const columnHeaders: string[] = [];
-    const hasActiveFilters = tableData?.filters && tableData.filters.length > 0;
+    const columnMeta = tableData?.columns ?? [];
+    const rowOrder: (string | null)[] = [];
+    const hasActiveFilters = Boolean(tableData?.filters && tableData.filters.length > 0);
 
-    if (tableData?.data && tableData.data.length > 0) {
-      const columnNames = Object.keys(tableData.data[0] ?? {})
-        .filter(key => key.startsWith('column_'))
-        .sort();
+    if (columnMeta.length > 0) {
+      columnMeta.forEach((column, index) => {
+        columnHeaders[index] = column.header || column.sql_name || `COLUMN_${index + 1}`;
+      });
+    }
 
-      const headerRowNumber = tableData.data.reduce((min: number, row: any) => {
-        const value = typeof row.row_number === 'number' ? row.row_number : Number(row.row_number ?? 0);
-        return Number.isFinite(value) ? Math.min(min, value) : min;
-      }, Number.POSITIVE_INFINITY);
+    if (tableData?.rows && tableData.rows.length > 0) {
+      tableData.rows.forEach((row) => {
+        if (!row || typeof row.display_index !== 'number') {
+          return;
+        }
 
-      const effectiveHeaderRow = Number.isFinite(headerRowNumber) ? headerRowNumber : 0;
+        const zeroBasedRow = Math.max(0, row.display_index - 1);
+        rowOrder[zeroBasedRow] = row.row_id;
 
-      tableData.data.forEach((row: any) => {
-        const rawRowNumber = typeof row.row_number === 'number' ? row.row_number : Number(row.row_number ?? 0);
-        const rowNumber = Number.isFinite(rawRowNumber) ? rawRowNumber : 0;
-
-        columnNames.forEach((colName, colIndex) => {
-          const cellValue = row[colName];
-
-          if (rowNumber === effectiveHeaderRow) {
-            if (typeof cellValue === 'string' && cellValue.trim() !== '') {
-              columnHeaders[colIndex] = cellValue;
-            }
-          } else if (rowNumber > effectiveHeaderRow) {
-            const zeroBasedRow = rowNumber - effectiveHeaderRow - 1;
-            if (zeroBasedRow >= 0 && cellValue !== null && cellValue !== undefined && cellValue !== '') {
-              cells[`${zeroBasedRow}-${colIndex}`] = cellValue;
-            }
+        columnMeta.forEach((column, colIndex) => {
+          const rawValue = row.values?.[column.column_id] ?? null;
+          if (rawValue !== null && rawValue !== undefined && String(rawValue).length > 0) {
+            cells[`${zeroBasedRow}-${colIndex}`] = String(rawValue);
           }
         });
       });
@@ -775,12 +846,7 @@ const SpreadsheetView = () => {
       columnHeaders.push('COLUMN_1', 'COLUMN_2', 'COLUMN_3', 'COLUMN_4', 'COLUMN_5');
     }
 
-    // Extract the actual row numbers from data for display (handles filters and deleted rows)
-    const actualRowNumbers = Array.from(new Set(Object.keys(cells).map(key => parseInt(key.split('-')[0])))).sort((a, b) => a - b);
-    const hasGaps = actualRowNumbers.length > 0 && actualRowNumbers.some((num, idx) => idx > 0 && num !== actualRowNumbers[idx - 1] + 1);
-    const displayRowNumbers = (hasActiveFilters || hasGaps) ? actualRowNumbers : undefined;
-
-    return { cells, columnHeaders, hasActiveFilters, displayRowNumbers };
+    return { cells, columnHeaders, columnMeta, rowOrder, hasActiveFilters, view: tableData?.view };
   };
 
   const refreshActiveSheetFromServer = async () => {
@@ -788,7 +854,7 @@ const SpreadsheetView = () => {
 
     try {
       const tableData = await loadSheetData(activeSheet.id);
-      const { cells, columnHeaders, hasActiveFilters, displayRowNumbers } = transformTableDataToSheetState(tableData);
+      const { cells, columnHeaders, columnMeta, rowOrder, hasActiveFilters, view } = transformTableDataToSheetState(tableData);
 
       setSheets(prevSheets =>
         prevSheets.map(sheet =>
@@ -798,7 +864,9 @@ const SpreadsheetView = () => {
                 cells,
                 columnHeaders,
                 hasActiveFilters,
-                displayRowNumbers,
+                rowOrder,
+                columnMeta,
+                view,
               }
             : sheet
         )
@@ -842,13 +910,12 @@ const SpreadsheetView = () => {
     const highlightCalls = toolCalls.filter(call => call?.kind === 'highlight' && call.status === 'ok');
     if (hasClear || highlightCalls.length > 0) {
       const newHighlights = highlightCalls
-        .filter(call => call.sheetId && (call.range || (call.condition && call.rowNumbers)))
+        .filter(call => call.sheetId && (call.range || call.condition || (call.rowIds && call.rowIds.length > 0)))
         .map(call => ({
           sheetId: call.sheetId!,
           range: call.range,
           condition: call.condition,
-          // Convert 1-based row_numbers from backend to 0-based row indices for frontend
-          rowNumbers: call.rowNumbers?.map(n => n - 1),
+          rowIds: call.rowIds ?? [],
           color: call.color || 'yellow',
           message: call.message || null,
         }));
@@ -950,10 +1017,12 @@ const SpreadsheetView = () => {
         targetCol = match[1].charCodeAt(0) - 65; // Convert A->0, B->1, etc
         targetRow = parseInt(match[2]) - 1; // Convert 1-based to 0-based
       }
-    } else if (highlight.rowNumbers && highlight.rowNumbers.length > 0) {
-      // Use first row number
-      targetRow = highlight.rowNumbers[0];
-      targetCol = 0;
+    } else if (highlight.rowIds && highlight.rowIds.length > 0) {
+      const rowIndex = activeSheet.rowOrder.findIndex(id => id === highlight.rowIds![0]);
+      if (rowIndex >= 0) {
+        targetRow = rowIndex;
+        targetCol = 0;
+      }
     }
 
     if (targetRow !== undefined && targetCol !== undefined) {
@@ -1287,7 +1356,7 @@ const SpreadsheetView = () => {
                     ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
                     : undefined
                 }
-                selectedCells={getSelectedCellsContent()}
+                selectionSnapshot={getSelectionSnapshot()}
               />
               <div className="text-sm text-muted-foreground">
                 {dataRowCount.toLocaleString()} rows
@@ -1308,7 +1377,7 @@ const SpreadsheetView = () => {
                   onAddRow={addNewRow}
                   onClearSelectedCells={clearSelectedCells}
                   rowCount={effectiveRowCount}
-                  displayRowNumbers={activeSheet.displayRowNumbers}
+                  rowOrder={activeSheet.rowOrder}
                   columnWidths={columnWidths}
                   rowHeights={rowHeights}
                   onColumnResize={updateColumnWidth}
@@ -1339,7 +1408,7 @@ const SpreadsheetView = () => {
             style={{ width: `${chatPanelWidth}px` }}
           >
             <ChatPanel
-              selectedCells={getSelectedCellsContent()}
+              selection={getSelectionSnapshot()}
               spreadsheetId={spreadsheetId}
               activeSheetId={activeSheet?.id}
               onCommand={handleChatCommand}

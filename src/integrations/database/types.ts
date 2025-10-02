@@ -13,17 +13,47 @@ export interface SheetRecord {
   updated_at: string;
 }
 
+export interface SheetColumn {
+  column_index: number;
+  column_id: string;
+  header: string;
+  sql_name: string;
+}
+
 export interface SheetTableRow {
-  row_number: number;
-  [key: string]: string | number | null | undefined;
+  row_id: string;
+  display_index: number;
+  order_key: number;
+  created_at: string;
+  updated_at: string;
+  values: Record<string, string | null>;
 }
 
 export interface FilterCondition {
   condition: string;
 }
 
+export interface SheetViewSpecSort {
+  column: string;
+  dir: 'asc' | 'desc';
+}
+
+export interface SheetViewSpec {
+  filters: FilterCondition[];
+  sort: SheetViewSpecSort[];
+  hiddenCols: string[];
+}
+
+export interface SheetViewState {
+  spec: SheetViewSpec;
+  hash: string;
+  revision: string;
+}
+
 export interface SheetTableData {
-  data: SheetTableRow[];
+  columns: SheetColumn[];
+  rows: SheetTableRow[];
+  view: SheetViewState;
   filters?: FilterCondition[];
 }
 
@@ -77,9 +107,29 @@ export interface CellHighlight {
   sheetId: string;
   range?: string;
   condition?: string;
-  rowNumbers?: number[];
+  rowIds?: string[];
   color: string;
   message?: string | null;
+}
+
+export interface SelectionCellSnapshot {
+  coord: string;
+  value: string;
+  rowId?: string | null;
+  columnId?: string | null;
+  rowIndex: number;
+  columnIndex: number;
+}
+
+export interface SelectionSnapshot {
+  sheetId: string;
+  sheetName?: string;
+  view?: SheetViewState;
+  coords?: string | null;
+  rowIds: string[];
+  columnIds: string[];
+  anchor: 'ids' | 'coords';
+  cells: SelectionCellSnapshot[];
 }
 
 export interface DataClient {
@@ -93,17 +143,27 @@ export interface DataClient {
   updateSheetName(sheetId: string, name: string): Promise<void>;
   deleteSheet(sheetId: string): Promise<void>;
   createDynamicTable(sheetId: string, columnCount: number): Promise<void>;
-  syncCell(sheetId: string, row: number, col: number, value: string): Promise<void>;
+  syncCell(
+    sheetId: string,
+    payload: {
+      rowId?: string | null;
+      displayIndex?: number | null;
+      columnIndex: number;
+      value: string;
+      isHeader?: boolean;
+      viewHash?: string;
+    }
+  ): Promise<{ rowId: string | null; displayIndex: number | null; view: SheetViewState }>;
   importBulkData(sheetId: string, headers: string[], rows: string[][]): Promise<void>;
   loadSheetData(sheetId: string): Promise<SheetTableData>;
   getChatMessages(spreadsheetId: string): Promise<ChatMessage[]>;
   sendChatMessage(
     spreadsheetId: string,
-    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
+    payload: { query: string; selection?: SelectionSnapshot | null; activeSheetId?: string }
   ): Promise<{ response: string; assistantMessage: ChatMessage; messages: ChatMessage[] }>;
   sendChatMessageStream?: (
     spreadsheetId: string,
-    payload: { query: string; selectedCells?: Record<string, string>; activeSheetId?: string }
+    payload: { query: string; selection?: SelectionSnapshot | null; activeSheetId?: string }
   ) => AsyncGenerator<ChatStreamEvent>;
   clearChat(spreadsheetId: string): Promise<void>;
   deleteColumn(sheetId: string, columnIndex: number): Promise<void>;

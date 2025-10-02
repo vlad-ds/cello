@@ -5,6 +5,7 @@ import { SpreadsheetGrid } from "@/components/SpreadsheetGrid";
 import { SheetTabs } from "@/components/SheetTabs";
 import { CoordinateDisplay } from "@/components/CoordinateDisplay";
 import { ChatPanel } from "@/components/ChatPanel";
+import type { SheetViewState, SheetColumn, SelectionSnapshot } from "@/integrations/database";
 
 export interface CellData {
   [key: string]: string;
@@ -16,7 +17,9 @@ export interface SheetData {
   cells: CellData;
   columnHeaders: string[];
   hasActiveFilters?: boolean;
-  displayRowNumbers?: number[]; // Actual row numbers to display when filters are active
+  rowOrder: (string | null)[];
+  view?: SheetViewState;
+  columnMeta?: SheetColumn[];
 }
 
 export interface CellSelection {
@@ -37,7 +40,9 @@ const Index = () => {
       id: "sheet1",
       name: "Sheet 1",
       cells: {},
-      columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+      columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"],
+      rowOrder: [],
+      columnMeta: []
     }
   ]);
   
@@ -336,7 +341,10 @@ const Index = () => {
       id: newId,
       name: `Sheet ${sheets.length + 1}`,
       cells: {},
-      columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"]
+      columnHeaders: ["COLUMN_1", "COLUMN_2", "COLUMN_3", "COLUMN_4", "COLUMN_5"],
+      rowOrder: [],
+      columnMeta: [],
+      view: undefined,
     };
     setSheets(prev => [...prev, newSheet]);
     setActiveSheetId(newId);
@@ -386,28 +394,65 @@ const Index = () => {
     }
   };
 
-  const getSelectedCellsContent = () => {
+  const colToLetter = (colIndex: number): string => {
+    let label = '';
+    let num = colIndex + 1;
+    while (num > 0) {
+      num -= 1;
+      label = String.fromCharCode(65 + (num % 26)) + label;
+      num = Math.floor(num / 26);
+    }
+    return label;
+  };
+
+  const getSelectionSnapshot = (): SelectionSnapshot | null => {
     const minRow = Math.min(selection.start.row, selection.end.row);
     const maxRow = Math.max(selection.start.row, selection.end.row);
     const minCol = Math.min(selection.start.col, selection.end.col);
     const maxCol = Math.max(selection.start.col, selection.end.col);
-    
-    const selectedCells: { [key: string]: string } = {};
-    
+
+    const cells: SelectionSnapshot['cells'] = [];
+    const rowIds = new Set<string>();
+    const columnIds = new Set<string>();
+
     for (let row = minRow; row <= maxRow; row++) {
+      const rowId = activeSheet.rowOrder[row] ?? `row_${row + 1}`;
+      rowIds.add(rowId);
+
       for (let col = minCol; col <= maxCol; col++) {
-        const cellKey = `${row}-${col}`;
-        const cellValue = activeSheet.cells[cellKey] || "";
-        if (cellValue.trim()) {
-          // Convert to readable format like A1, B2, etc.
-          const columnLetter = String.fromCharCode(65 + col);
-          const readableKey = `${columnLetter}${row + 1}`;
-          selectedCells[readableKey] = cellValue;
-        }
+        const coord = `${colToLetter(col)}${row + 1}`;
+        const value = activeSheet.cells?.[`${row}-${col}`] ?? '';
+        const columnMeta = activeSheet.columnMeta?.[col];
+        const columnId = columnMeta?.column_id ?? `col_${col + 1}`;
+        columnIds.add(columnId);
+
+        cells.push({
+          coord,
+          value,
+          rowId,
+          columnId,
+          rowIndex: row,
+          columnIndex: col,
+        });
       }
     }
-    
-    return selectedCells;
+
+    if (cells.length === 0) {
+      return null;
+    }
+
+    const startCoord = `${colToLetter(minCol)}${minRow + 1}`;
+    const endCoord = `${colToLetter(maxCol)}${maxRow + 1}`;
+
+    return {
+      sheetId: activeSheet.id,
+      sheetName: activeSheet.name,
+      coords: minRow === maxRow && minCol === maxCol ? startCoord : `${startCoord}:${endCoord}`,
+      rowIds: Array.from(rowIds),
+      columnIds: Array.from(columnIds),
+      anchor: 'coords',
+      cells,
+    } satisfies SelectionSnapshot;
   };
 
   const handleChatCommand = (command: string) => {
@@ -501,7 +546,10 @@ const Index = () => {
         {/* Main Spreadsheet Area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Coordinate Display */}
-          <CoordinateDisplay selection={selection} />
+          <CoordinateDisplay
+            selection={selection}
+            selectionSnapshot={getSelectionSnapshot()}
+          />
           
           {/* Spreadsheet Grid */}
           <div className="flex-1 overflow-auto">
@@ -516,6 +564,7 @@ const Index = () => {
               onAddRow={addNewRow}
               onClearSelectedCells={clearSelectedCells}
               rowCount={rowCount}
+              rowOrder={activeSheet.rowOrder}
               columnWidths={columnWidths}
               rowHeights={rowHeights}
               onColumnResize={updateColumnWidth}
@@ -543,7 +592,7 @@ const Index = () => {
           >
             <ChatPanel 
               onCommand={handleChatCommand} 
-              selectedCells={getSelectedCellsContent()} 
+              selection={getSelectionSnapshot()} 
             />
           </div>
         </div>

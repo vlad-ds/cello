@@ -14,6 +14,7 @@ import {
   type FilterCondition,
   type ChatMessage,
   type ToolCallRecord,
+  type SelectionSnapshot,
 } from "@/integrations/database";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -38,7 +39,7 @@ type ToolCall = ToolCallRecord;
 interface ChatPanelProps {
   onCommand?: (command: string) => void;
   onAssistantToolCalls?: (toolCalls: ToolCall[] | null | undefined) => void;
-  selectedCells?: { [key: string]: string };
+  selection?: SelectionSnapshot | null;
   spreadsheetId?: string;
   activeSheetId?: string;
   highlights?: CellHighlight[];
@@ -48,21 +49,6 @@ interface ChatPanelProps {
   onClearFilters?: () => void;
   programmaticMessage?: string | null;
 }
-
-const getRangeValue = (selectedCells?: { [key: string]: string }) => {
-  if (!selectedCells || Object.keys(selectedCells).length === 0) return null;
-  const cells = Object.keys(selectedCells)
-    .map((key) => key.toUpperCase())
-    .sort();
-  if (cells.length === 0) return null;
-
-  const first = cells[0];
-  const last = cells[cells.length - 1];
-  if (first === last) {
-    return first;
-  }
-  return `${first}:${last}`;
-};
 
 const formatRangeDisplay = (value?: string | null) => {
   if (!value) return null;
@@ -100,7 +86,7 @@ const welcomeMessage: Message = {
   isStreaming: false,
 };
 
-export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, onScrollToHighlight, filters = [], onClearFilters, programmaticMessage }: ChatPanelProps) => {
+export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsheetId, activeSheetId, highlights = [], onClearHighlights, onScrollToHighlight, filters = [], onClearFilters, programmaticMessage }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([welcomeMessage]);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -177,7 +163,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
     if (!messageText.trim()) return;
 
     const trimmed = messageText.trim();
-    const rangeValue = getRangeValue(selectedCells);
+    const rangeValue = selection?.coords ?? null;
     const timestamp = new Date();
     const userMessage: Message = {
       id: `${Date.now()}`,
@@ -233,7 +219,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
 
           for await (const event of streamChat(spreadsheetId, {
             query: trimmed,
-            selectedCells: selectedCells || {},
+            selection: selection ?? null,
             activeSheetId,
           })) {
             // Check if user wants to abort the stream
@@ -376,7 +362,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         } else {
           const response = await dataClient.sendChatMessage(spreadsheetId, {
             query: trimmed,
-            selectedCells: selectedCells || {},
+            selection: selection ?? null,
             activeSheetId,
           });
 
@@ -398,7 +384,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         const { data, error } = await supabase.functions.invoke('gemini-chat', {
           body: {
             query: trimmed,
-            selectedCells: selectedCells || {},
+            selection: selection ?? null,
           },
         });
 
@@ -548,7 +534,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                   }`} />
                   <span className="text-xs text-muted-foreground">
                     {highlight.range || (highlight.condition ? `condition: ${highlight.condition}` : 'unknown')}
-                    {highlight.rowNumbers && ` (${highlight.rowNumbers.length} row${highlight.rowNumbers.length !== 1 ? 's' : ''})`}
+                    {highlight.rowIds && ` (${highlight.rowIds.length} row${highlight.rowIds.length !== 1 ? 's' : ''})`}
                     {highlight.message && ` - ${highlight.message}`}
                   </span>
                 </button>
@@ -683,7 +669,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
                                         <Sparkles className="h-4 w-4" />
                                         <span>
                                           Highlighted cells {toolCall.range || (toolCall.condition ? `where ${toolCall.condition}` : 'unknown')}
-                                          {toolCall.rowNumbers && ` (${toolCall.rowNumbers.length} row${toolCall.rowNumbers.length !== 1 ? 's' : ''})`}
+                                          {toolCall.rowIds && ` (${toolCall.rowIds.length} row${toolCall.rowIds.length !== 1 ? 's' : ''})`}
                                           {toolCall.sheetName
                                             ? ` in ${toolCall.sheetName}`
                                             : toolCall.sheetId

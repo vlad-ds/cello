@@ -24,7 +24,7 @@ interface SpreadsheetGridProps {
   getColumnWidth: (colIndex: number) => number;
   getRowHeight: (rowIndex: number) => number;
   highlights?: CellHighlight[];
-  displayRowNumbers?: number[];
+  rowOrder?: (string | null)[];
   onFillRequest?: (sourceRange: string, targetRange: string, sourceData: string[][], skipConfirmation: boolean) => void;
   onAIPromptRequest?: (targetCell: string, prompt: string, selectedRange?: string) => void;
 }
@@ -47,7 +47,7 @@ export const SpreadsheetGrid = ({
   getColumnWidth,
   getRowHeight,
   highlights = [],
-  displayRowNumbers,
+  rowOrder,
   onFillRequest,
   onAIPromptRequest,
 }: SpreadsheetGridProps) => {
@@ -122,13 +122,26 @@ export const SpreadsheetGrid = ({
   // Pre-calculate highlight map for O(1) lookup
   const highlightMap = useMemo(() => {
     const map = new Map<string, string>();
+    const rowIndexById = new Map<string, number>();
+
+    if (rowOrder) {
+      rowOrder.forEach((id, index) => {
+        if (id) {
+          rowIndexById.set(id, index);
+        }
+      });
+    }
 
     for (const highlight of highlights) {
-      // Row-based highlighting
-      if (highlight.rowNumbers && highlight.rowNumbers.length > 0) {
-        for (const row of highlight.rowNumbers) {
+      // Row-based highlighting using stable row ids
+      if (highlight.rowIds && highlight.rowIds.length > 0) {
+        for (const rowId of highlight.rowIds) {
+          const rowIndex = rowId ? rowIndexById.get(rowId) : undefined;
+          if (rowIndex === undefined) {
+            continue;
+          }
           for (let col = 0; col < COLS; col++) {
-            const key = `${row}-${col}`;
+            const key = `${rowIndex}-${col}`;
             if (!map.has(key)) {
               map.set(key, highlight.color);
             }
@@ -184,7 +197,7 @@ export const SpreadsheetGrid = ({
     }
 
     return map;
-  }, [highlights, COLS]);
+  }, [highlights, COLS, rowOrder]);
 
   // Helper to convert column index to letter (0 -> A, 1 -> B, etc.)
   function colToLetter(col: number): string {
@@ -206,29 +219,7 @@ export const SpreadsheetGrid = ({
     return col - 1;
   }
 
-  const getActualRowIndex = useCallback((rowIndex: number): number => {
-    if (!displayRowNumbers || displayRowNumbers.length === 0) {
-      return rowIndex;
-    }
-
-    const mapped = displayRowNumbers[rowIndex];
-    if (typeof mapped === 'number' && Number.isFinite(mapped)) {
-      return mapped;
-    }
-
-    const lastKnownIndex = displayRowNumbers.length - 1;
-    const lastKnownValue = displayRowNumbers[lastKnownIndex] ?? -1;
-
-    if (rowIndex <= lastKnownIndex) {
-      return rowIndex;
-    }
-
-    return lastKnownValue + (rowIndex - lastKnownIndex);
-  }, [displayRowNumbers]);
-
-  const getRowHeaderLabel = useCallback((rowIndex: number): number => {
-    return getActualRowIndex(rowIndex) + 1;
-  }, [getActualRowIndex]);
+  const getRowHeaderLabel = useCallback((rowIndex: number): number => rowIndex + 1, []);
 
   // Check if a cell is highlighted using pre-calculated map
   const getCellHighlightColor = (row: number, col: number): string | null => {
@@ -271,16 +262,13 @@ export const SpreadsheetGrid = ({
     const minCol = Math.min(selection.start.col, selection.end.col);
     const maxCol = Math.max(selection.start.col, selection.end.col);
 
-    const normalizeRowIndex = (rowIndex: number) => getActualRowIndex(rowIndex);
-
     const rows: string[] = [];
 
     for (let row = minRow; row <= maxRow; row++) {
-      const actualRow = normalizeRowIndex(row);
       const values: string[] = [];
 
       for (let col = minCol; col <= maxCol; col++) {
-        const rawValue = sheet.cells?.[`${actualRow}-${col}`];
+        const rawValue = sheet.cells?.[`${row}-${col}`];
         values.push(rawValue === undefined || rawValue === null ? '' : String(rawValue));
       }
 
@@ -329,7 +317,7 @@ export const SpreadsheetGrid = ({
     };
 
     void writeClipboard();
-  }, [selection, sheet.cells, displayRowNumbers, getActualRowIndex]);
+  }, [selection, sheet.cells]);
 
   // Coordinate-based selection for virtualized mode
   useEffect(() => {
@@ -492,8 +480,7 @@ export const SpreadsheetGrid = ({
 
     // Measure all cells in this column
     for (let row = 0; row < ROWS; row++) {
-      const actualRow = getActualRowIndex(row);
-      const cellValue = sheet.cells[`${actualRow}-${colIndex}`];
+      const cellValue = sheet.cells[`${row}-${colIndex}`];
       if (cellValue) {
         const cellWidth = context.measureText(String(cellValue)).width;
         maxWidth = Math.max(maxWidth, cellWidth + 24); // Add padding
@@ -508,7 +495,6 @@ export const SpreadsheetGrid = ({
 
   // Auto-fit row height to content
   const autoFitRow = (rowIndex: number) => {
-    const actualRow = getActualRowIndex(rowIndex);
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     if (!context) return;
@@ -519,7 +505,7 @@ export const SpreadsheetGrid = ({
 
     // Check all cells in this row
     for (let col = 0; col < COLS; col++) {
-      const cellValue = sheet.cells[`${actualRow}-${col}`];
+      const cellValue = sheet.cells[`${rowIndex}-${col}`];
       if (cellValue) {
         const text = String(cellValue);
         const colWidth = getColumnWidth(col) - 16; // Account for padding
@@ -589,8 +575,7 @@ export const SpreadsheetGrid = ({
     for (let row = selectionBounds.minRow; row <= selectionBounds.maxRow; row++) {
       const rowData: string[] = [];
       for (let col = selectionBounds.minCol; col <= selectionBounds.maxCol; col++) {
-        const actualRow = getActualRowIndex(row);
-        rowData.push(sheet.cells[`${actualRow}-${col}`] || '');
+        rowData.push(sheet.cells[`${row}-${col}`] || '');
       }
       sourceData.push(rowData);
     }
@@ -624,8 +609,7 @@ export const SpreadsheetGrid = ({
     if (isSingleValue) {
       const valueToFill = uniqueValues.size === 1 ? Array.from(uniqueValues)[0] : '';
       targetCells.forEach(({ row, col }) => {
-        const actualRow = getActualRowIndex(row);
-        onCellUpdate(actualRow, col, valueToFill);
+        onCellUpdate(row, col, valueToFill);
       });
     } else {
       // For complex patterns, request AI assistance
@@ -657,11 +641,10 @@ export const SpreadsheetGrid = ({
   }, []);
 
   const handleCellEdit = useCallback((row: number, col: number, value: string) => {
-    const actualRow = getActualRowIndex(row);
-    onCellUpdate(actualRow, col, value);
+    onCellUpdate(row, col, value);
     setEditingCell(null);
     setAiPromptMode(null);
-  }, [getActualRowIndex, onCellUpdate]);
+  }, [onCellUpdate]);
 
   const handleAIPromptChange = useCallback((row: number, col: number, prompt: string) => {
     if (prompt.startsWith('=')) {
@@ -1256,15 +1239,14 @@ export const SpreadsheetGrid = ({
 
                 {/* Data Cells */}
               {Array.from({ length: COLS }, (_, colIndex) => {
-                const actualRow = getActualRowIndex(rowIndex);
-                const highlightColor = getCellHighlightColor(actualRow, colIndex);
+                const highlightColor = getCellHighlightColor(rowIndex, colIndex);
                 const isAIPromptCell = aiPromptMode?.row === rowIndex && aiPromptMode?.col === colIndex;
                 return (
                   <Cell
                     key={`${rowIndex}-${colIndex}`}
                     rowIndex={rowIndex}
                     colIndex={colIndex}
-                    value={sheet.cells[`${actualRow}-${colIndex}`] || ""}
+                    value={sheet.cells[`${rowIndex}-${colIndex}`] || ""}
                     isHeader={false}
                     isSelected={isCellSelected(rowIndex, colIndex)}
                     isEditing={editingCell?.row === rowIndex && editingCell?.col === colIndex}
@@ -1332,15 +1314,14 @@ export const SpreadsheetGrid = ({
 
               {/* Data Cells */}
               {Array.from({ length: COLS }, (_, colIndex) => {
-                const actualRow = getActualRowIndex(rowIndex);
-                const highlightColor = getCellHighlightColor(actualRow, colIndex);
+                const highlightColor = getCellHighlightColor(rowIndex, colIndex);
                 const isAIPromptCell = aiPromptMode?.row === rowIndex && aiPromptMode?.col === colIndex;
                 return (
                   <Cell
                     key={`${rowIndex}-${colIndex}`}
                     rowIndex={rowIndex}
                     colIndex={colIndex}
-                    value={sheet.cells[`${actualRow}-${colIndex}`] || ""}
+                    value={sheet.cells[`${rowIndex}-${colIndex}`] || ""}
                     isHeader={false}
                     isSelected={isCellSelected(rowIndex, colIndex)}
                     isEditing={editingCell?.row === rowIndex && editingCell?.col === colIndex}
