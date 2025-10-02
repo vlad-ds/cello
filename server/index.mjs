@@ -636,10 +636,10 @@ const ensureSheetTable = (sheetId) => {
   const createTable = () => {
     db.prepare(
       `CREATE TABLE IF NOT EXISTS "${tableName}" (
-        row_id TEXT PRIMARY KEY,
-        order_key REAL NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
+        row_id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))) ,
+        order_key REAL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
         deleted_at TEXT
       )`
     ).run();
@@ -650,6 +650,34 @@ const ensureSheetTable = (sheetId) => {
     db.prepare(
       `CREATE INDEX IF NOT EXISTS "${tableName}_deleted_at_idx" ON "${tableName}" (deleted_at)`
     ).run();
+
+    db.prepare(
+      `CREATE TRIGGER IF NOT EXISTS "${tableName}_ai_defaults"
+       AFTER INSERT ON "${tableName}"
+       FOR EACH ROW
+       BEGIN
+         UPDATE "${tableName}"
+         SET
+           row_id = CASE
+             WHEN NEW.row_id IS NULL OR trim(NEW.row_id) = '' THEN lower(hex(randomblob(16)))
+             ELSE NEW.row_id
+           END,
+           order_key = COALESCE(
+             NEW.order_key,
+             (
+               SELECT COALESCE(MAX(order_key), 0) + 1
+               FROM "${tableName}"
+               WHERE row_id <> NEW.row_id AND deleted_at IS NULL
+             )
+           ),
+           created_at = COALESCE(NEW.created_at, datetime('now')),
+           updated_at = datetime('now'),
+           deleted_at = CASE WHEN NEW.deleted_at IS NULL OR trim(NEW.deleted_at) = '' THEN NULL ELSE NEW.deleted_at END
+         WHERE rowid = NEW.rowid;
+       END`
+    ).run();
+
+
   };
 
   const existing = db
