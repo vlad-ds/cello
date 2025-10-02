@@ -94,8 +94,11 @@ export const FillConfirmationDialog = ({
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>AI Fill Preview</DialogTitle>
-          <DialogDescription>
-            The AI will analyze the pattern in {sourceRange} and fill {targetRange}.
+          <DialogDescription className="space-y-1">
+            <span className="block">The AI will analyze the pattern in {sourceRange} and fill {targetRange}.</span>
+            <span className="block text-xs opacity-60">
+              💡 Tip: Hold <kbd className="px-1 py-0.5 bg-muted/50 rounded text-[10px] font-mono">{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd> while releasing to skip this dialog
+            </span>
           </DialogDescription>
         </DialogHeader>
 
@@ -160,20 +163,13 @@ export const FillConfirmationDialog = ({
           </div>
 
           {/* Actions */}
-          <div className="space-y-3 pt-2">
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={onCancel}>
-                Cancel
-              </Button>
-              <Button onClick={() => onConfirm(additionalInstructions.trim() || undefined)}>
-                Fill with AI
-              </Button>
-            </div>
-
-            {/* Hint for skipping dialog */}
-            <p className="text-xs text-muted-foreground text-center">
-              💡 Tip: Hold <kbd className="px-1.5 py-0.5 bg-muted rounded border text-xs font-mono">{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd> while releasing the fill handle to skip this dialog
-            </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button onClick={() => onConfirm(additionalInstructions.trim() || undefined)}>
+              Fill with AI
+            </Button>
           </div>
         </div>
       </DialogContent>
