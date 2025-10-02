@@ -160,13 +160,20 @@ export const FillConfirmationDialog = ({
           </div>
 
           {/* Actions */}
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button onClick={() => onConfirm(additionalInstructions.trim() || undefined)}>
-              Fill with AI
-            </Button>
+          <div className="space-y-3 pt-2">
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button onClick={() => onConfirm(additionalInstructions.trim() || undefined)}>
+                Fill with AI
+              </Button>
+            </div>
+
+            {/* Hint for skipping dialog */}
+            <p className="text-xs text-muted-foreground text-center">
+              💡 Tip: Hold <kbd className="px-1.5 py-0.5 bg-muted rounded border text-xs font-mono">{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd> while releasing the fill handle to skip this dialog
+            </p>
           </div>
         </div>
       </DialogContent>
