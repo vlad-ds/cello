@@ -6,9 +6,10 @@ import { toast } from "@/components/ui/sonner";
 
 interface FileImportProps {
   onImport: (data: { sheetName: string; headers: string[]; rows: string[][] }) => void;
+  children?: React.ReactNode;
 }
 
-export const FileImport = ({ onImport }: FileImportProps) => {
+export const FileImport = ({ onImport, children }: FileImportProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -68,14 +69,20 @@ export const FileImport = ({ onImport }: FileImportProps) => {
         onChange={handleFileSelect}
         className="hidden"
       />
-      <Button
-        onClick={() => fileInputRef.current?.click()}
-        variant="outline"
-        size="sm"
-      >
-        <Upload className="w-4 h-4 mr-2" />
-        Import
-      </Button>
+      {children ? (
+        <div onClick={() => fileInputRef.current?.click()}>
+          {children}
+        </div>
+      ) : (
+        <Button
+          onClick={() => fileInputRef.current?.click()}
+          variant="outline"
+          size="sm"
+        >
+          <Upload className="w-4 h-4 mr-2" />
+          Import
+        </Button>
+      )}
     </>
   );
 };

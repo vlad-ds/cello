@@ -75,6 +75,21 @@ export const SpreadsheetGrid = ({
     enabled: useVirtualization,
   });
 
+  const sheetRowHeightsSignature = useMemo(() => {
+    const prefix = `${sheet.id}-`;
+    return Object.entries(rowHeights)
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, value]) => `${key}:${value}`)
+      .sort()
+      .join('|');
+  }, [rowHeights, sheet.id]);
+
+  useEffect(() => {
+    if (useVirtualization) {
+      rowVirtualizer.measure();
+    }
+  }, [useVirtualization, rowVirtualizer, sheetRowHeightsSignature]);
+
   // Pre-calculate selection bounds for performance
   const selectionBounds = useMemo(() => {
     const minRow = Math.min(selection.start.row, selection.end.row);
@@ -651,9 +666,10 @@ export const SpreadsheetGrid = ({
               <div
                 key={virtualRow.key}
                 data-index={rowIndex}
+                ref={rowVirtualizer.measureElement}
                 className="flex absolute top-0 left-0 w-full"
                 style={{
-                  height: `${virtualRow.size}px`,
+                  height: `${getRowHeight(rowIndex)}px`,
                   transform: `translateY(${virtualRow.start}px)`,
                   pointerEvents: 'auto',
                 }}

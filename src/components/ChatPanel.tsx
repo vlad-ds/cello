@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { FollowEyesCharacter } from "@/components/FollowEyesCharacter";
 import { supabase } from "@/integrations/supabase/client";
 import { backendConfig } from "@/config/backend";
 import {
@@ -91,7 +92,7 @@ const welcomeMessage: Message = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hi! I'm your spreadsheet AI assistant. I can help you work with your data, create formulas, analyze trends, and more. Try asking me something like 'Sum column A' or 'What's the average of row 1'?",
+    "Hey there! ✨ I'm **Celly**, your spreadsheet sidekick! I'm here to help you wrangle data, crunch numbers, and make sense of all those cells. Think of me as your friendly neighborhood spreadsheet wizard! 🪄\n\nNeed help? Just ask! I can sum columns, calculate averages, spot trends, and even help you find that one cell you've been looking for. Let's make spreadsheets fun together! 🎉",
   timestamp: new Date(),
   contextRange: null,
   toolCalls: null,
@@ -189,7 +190,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           const warningMessage: Message = {
             id: `${Date.now() + 1}`,
             role: 'assistant',
-            content: 'Open a spreadsheet to start a saved conversation.',
+            content: 'Hey! 👋 To save our chat history, you\'ll need to open a spreadsheet first. Then we can keep track of all our conversations!',
             timestamp: new Date(),
             contextRange: null,
             toolCalls: null,
@@ -335,7 +336,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           const warningMessage: Message = {
             id: `${Date.now() + 1}`,
             role: 'assistant',
-            content: 'Open a spreadsheet to start a saved conversation.',
+            content: 'Hey! 👋 To save our chat history, you\'ll need to open a spreadsheet first. Then we can keep track of all our conversations!',
             timestamp: new Date(),
             contextRange: null,
             toolCalls: null,
@@ -378,7 +379,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         const assistantMessage: Message = {
           id: `${Date.now() + 1}`,
           role: 'assistant',
-          content: data.response || "I'm sorry, I couldn't process your request.",
+          content: data.response || "Oops! 😅 I had trouble processing that. Mind trying again?",
           timestamp: new Date(),
           contextRange: rangeValue,
           toolCalls: null,
@@ -395,8 +396,8 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
         role: 'assistant',
         content:
           error instanceof Error
-            ? error.message
-            : 'Sorry, I encountered an error processing your request.',
+            ? `Whoops! 😬 Something went wrong: ${error.message}`
+            : 'Uh oh! 😅 I ran into an issue. Could you try that again?',
         timestamp: new Date(),
         contextRange: null,
         toolCalls: null,
@@ -422,14 +423,14 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
       return;
     }
 
-    const confirmed = window.confirm('Clear the assistant conversation for this spreadsheet?');
+    const confirmed = window.confirm('Clear our conversation history? 🗑️ Don\'t worry, we can always start fresh!');
     if (!confirmed) return;
 
     setIsClearing(true);
     try {
       await dataClient.clearChat(spreadsheetId);
       setMessages([welcomeMessage]);
-      toast('Conversation cleared.');
+      toast('✨ Conversation cleared! Let\'s start fresh!');
     } catch (error) {
       console.error('Failed to clear conversation', error);
       toast(
@@ -457,15 +458,13 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
     <TooltipProvider>
       <div className="flex flex-col h-full bg-card">
       {/* Header */}
-      <div className="p-4 border-b border-border bg-gradient-to-r from-primary/5 to-accent/5">
+      <div className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/10 via-primary/5 to-accent/10">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <div className="p-2 bg-primary/10 rounded-lg">
-              <Sparkles className="w-5 h-5 text-primary" />
-            </div>
+          <div className="flex items-center gap-3">
+            <FollowEyesCharacter size={48} />
             <div>
-              <h3 className="font-semibold text-foreground">AI Assistant</h3>
-              <p className="text-sm text-muted-foreground">Spreadsheet helper</p>
+              <h3 className="font-semibold text-foreground">Celly</h3>
+              <p className="text-sm text-muted-foreground">Your spreadsheet sidekick ✨</p>
             </div>
           </div>
           <Button
@@ -564,10 +563,10 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             >
               <div className={`flex gap-3 max-w-[80%] ${message.role === "user" ? "flex-row-reverse" : ""}`}>
                 {/* Avatar */}
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                  message.role === "user" 
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-muted text-muted-foreground"
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-transform hover:scale-110 ${
+                  message.role === "user"
+                    ? "bg-gradient-to-br from-primary/80 to-primary text-primary-foreground shadow-sm"
+                    : "bg-gradient-to-br from-muted to-muted/60 text-muted-foreground"
                 }`}>
                   {message.role === "user" ? (
                     <User className="w-4 h-4" />
@@ -578,10 +577,10 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
 
                 {/* Message Content */}
                 <div className={`space-y-1 ${message.role === "user" ? "text-right" : ""}`}>
-                  <div className={`p-3 rounded-lg ${
+                  <div className={`p-3 rounded-2xl ${
                     message.role === "user"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-foreground"
+                      ? "bg-primary/15 text-foreground border border-primary/20"
+                      : "bg-muted/50 text-foreground"
                   }`}>
                     {message.role === 'assistant'
                       ? (() => {
@@ -816,15 +815,15 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
 
           {/* Typing Indicator */}
           {isTyping && (
-            <div className="flex gap-3">
-              <div className="w-8 h-8 rounded-full bg-muted text-muted-foreground flex items-center justify-center flex-shrink-0">
-                <Bot className="w-4 h-4" />
+            <div className="flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-muted to-muted/60 text-muted-foreground flex items-center justify-center flex-shrink-0">
+                <Bot className="w-4 h-4 animate-bounce" />
               </div>
-              <div className="bg-muted p-3 rounded-lg">
+              <div className="bg-muted/50 p-3 rounded-2xl">
                 <div className="flex gap-1">
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-pulse"></div>
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-pulse" style={{ animationDelay: "0.2s" }}></div>
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-pulse" style={{ animationDelay: "0.4s" }}></div>
+                  <div className="w-2 h-2 bg-primary rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></div>
+                  <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0.4s" }}></div>
                 </div>
               </div>
             </div>
@@ -841,7 +840,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask me about your spreadsheet..."
+            placeholder="Ask Celly anything... ✨"
             className="flex-1"
             disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
           />
@@ -849,12 +848,13 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             onClick={handleSendMessage}
             disabled={!input.trim() || isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
             size="icon"
+            className="transition-transform hover:scale-105 active:scale-95"
           >
             <Send className="w-4 h-4" />
           </Button>
         </div>
         <p className="text-xs text-muted-foreground mt-2">
-          Try: "Sum column A", "Average of row 1", "Create chart from data"
+          💡 Try: "Sum column A", "Find the highest value", "Highlight duplicates"
         </p>
         {!spreadsheetId && !isSupabaseBackend && (
           <p className="text-xs text-muted-foreground mt-2">

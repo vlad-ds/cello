@@ -500,7 +500,7 @@ try {
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '512kb' }));
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = Number(process.env.PORT || 4000);
 const AI_PROVIDER = process.env.AI_PROVIDER || 'anthropic'; // 'gemini' or 'anthropic'

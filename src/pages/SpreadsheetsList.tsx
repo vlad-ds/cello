@@ -114,106 +114,113 @@ const SpreadsheetsList = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="container mx-auto py-8 px-4">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">My Spreadsheets</h1>
-            <p className="text-muted-foreground mt-2">
-              Create and manage your interactive spreadsheets
-            </p>
+      <div className="container mx-auto px-4">
+        {/* Centered greeting section */}
+        <div className="max-w-3xl mx-auto pt-24 pb-16">
+          <h1 className="text-4xl font-medium text-center text-foreground mb-8">
+            Hey there
+          </h1>
+
+          {/* Search/action bar */}
+          <div className="relative mb-8">
+            <Input
+              placeholder="How can I help you today?"
+              className="h-14 text-base pl-6 pr-6 rounded-full shadow-sm border-border"
+              onClick={() => setIsCreateDialogOpen(true)}
+              readOnly
+            />
           </div>
-          
-          <div className="flex items-center gap-2">
-            <FileImport onImport={handleFileImport} />
+
+          {/* Action buttons */}
+          <div className="flex items-center justify-center gap-6 flex-wrap">
             <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
               <DialogTrigger asChild>
-                <Button className="flex items-center gap-2">
-                  <Plus className="w-4 h-4" />
-                  New Spreadsheet
+                <Button variant="ghost" className="flex flex-col items-center gap-2 h-auto py-3 px-6 rounded-xl hover:bg-muted">
+                  <Plus className="w-5 h-5" />
+                  <span className="text-sm">New Sheet</span>
                 </Button>
               </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create New Spreadsheet</DialogTitle>
-                <DialogDescription>
-                  Enter a name for your new spreadsheet. You can always rename it later.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="py-4">
-                <Label htmlFor="name">Spreadsheet Name</Label>
-                <Input
-                  id="name"
-                  value={newSpreadsheetName}
-                  onChange={(e) => setNewSpreadsheetName(e.target.value)}
-                  placeholder="Enter spreadsheet name..."
-                  className="mt-2"
-                  onKeyDown={(e) => e.key === 'Enter' && createSpreadsheet()}
-                />
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={createSpreadsheet} disabled={!newSpreadsheetName.trim()}>
-                  Create
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+              <DialogContent className="rounded-2xl">
+                <DialogHeader>
+                  <DialogTitle>Create New Spreadsheet</DialogTitle>
+                  <DialogDescription>
+                    Enter a name for your new spreadsheet
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="py-4">
+                  <Input
+                    id="name"
+                    value={newSpreadsheetName}
+                    onChange={(e) => setNewSpreadsheetName(e.target.value)}
+                    placeholder="Spreadsheet name..."
+                    className="rounded-lg"
+                    onKeyDown={(e) => e.key === 'Enter' && createSpreadsheet()}
+                    autoFocus
+                  />
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} className="rounded-lg">
+                    Cancel
+                  </Button>
+                  <Button onClick={createSpreadsheet} disabled={!newSpreadsheetName.trim()} className="rounded-lg">
+                    Create
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            <FileImport onImport={handleFileImport}>
+              <Button variant="ghost" className="flex flex-col items-center gap-2 h-auto py-3 px-6 rounded-xl hover:bg-muted">
+                <Upload className="w-5 h-5" />
+                <span className="text-sm">Import File</span>
+              </Button>
+            </FileImport>
+
+            <Button variant="ghost" className="flex flex-col items-center gap-2 h-auto py-3 px-6 rounded-xl hover:bg-muted" onClick={() => {}}>
+              <Folder className="w-5 h-5" />
+              <span className="text-sm">Browse</span>
+            </Button>
           </div>
         </div>
 
-        {spreadsheets.length === 0 ? (
-          <div className="text-center py-16">
-            <Folder className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-            <h2 className="text-xl font-semibold text-foreground mb-2">No spreadsheets yet</h2>
-            <p className="text-muted-foreground mb-6">
-              Create your first spreadsheet to get started with data management
-            </p>
-            <Button onClick={() => setIsCreateDialogOpen(true)} className="flex items-center gap-2">
-              <Plus className="w-4 h-4" />
-              Create First Spreadsheet
-            </Button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {spreadsheets.map((spreadsheet) => (
-              <Card
-                key={spreadsheet.id}
-                className="cursor-pointer hover:shadow-lg transition-shadow group relative"
-                onClick={() => navigate(`/spreadsheet/${spreadsheet.id}`)}
-              >
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 text-destructive hover:text-destructive hover:bg-destructive/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleteDialogSpreadsheet(spreadsheet);
-                  }}
+        {/* Spreadsheets list */}
+        {spreadsheets.length > 0 && (
+          <div className="max-w-6xl mx-auto pb-16">
+            <h2 className="text-xl font-medium text-foreground mb-6">Recent spreadsheets</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {spreadsheets.map((spreadsheet) => (
+                <Card
+                  key={spreadsheet.id}
+                  className="cursor-pointer hover:shadow-md transition-all group relative rounded-2xl border-border/50"
+                  onClick={() => navigate(`/spreadsheet/${spreadsheet.id}`)}
                 >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 pr-8">
-                    <Folder className="w-5 h-5 text-primary" />
-                    {spreadsheet.name}
-                  </CardTitle>
-                  <CardDescription className="font-mono text-xs">
-                    ID: {spreadsheet.id}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Calendar className="w-4 h-4" />
-                    <span>Updated: {formatDate(spreadsheet.updated_at)}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    Created: {formatDate(spreadsheet.created_at)}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity z-10 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteDialogSpreadsheet(spreadsheet);
+                    }}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-3 pr-8 text-lg font-medium">
+                      <div className="p-2 bg-primary/10 rounded-lg">
+                        <Folder className="w-5 h-5 text-primary" />
+                      </div>
+                      {spreadsheet.name}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-sm text-muted-foreground">
+                      Updated {formatDate(spreadsheet.updated_at)}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           </div>
         )}
       </div>

@@ -1088,9 +1088,9 @@ const SpreadsheetView = () => {
   return (
     <div className="h-screen bg-background flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-border bg-card">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border/50 bg-background">
         <div className="flex items-center gap-4">
-          <Button onClick={() => navigate('/')} variant="ghost" size="sm">
+          <Button onClick={() => navigate('/')} variant="ghost" size="sm" className="rounded-lg">
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back
           </Button>
@@ -1101,13 +1101,13 @@ const SpreadsheetView = () => {
               onChange={(e) => setEditedTitle(e.target.value)}
               onBlur={handleTitleSave}
               onKeyDown={handleTitleKeyDown}
-              className="text-xl font-semibold text-foreground bg-transparent border-b-2 border-primary outline-none px-2 py-1"
+              className="text-xl font-medium text-foreground bg-transparent border-b-2 border-primary outline-none px-2 py-1"
               autoFocus
               onFocus={(e) => e.target.select()}
             />
           ) : (
             <h1
-              className="text-xl font-semibold text-foreground cursor-pointer hover:text-primary transition-colors px-2 py-1"
+              className="text-xl font-medium text-foreground cursor-pointer hover:text-primary transition-colors px-2 py-1"
               onClick={handleTitleClick}
               title="Click to rename"
             >
@@ -1122,6 +1122,7 @@ const SpreadsheetView = () => {
             variant="outline"
             size="sm"
             disabled={historyIndex < 0}
+            className="rounded-lg"
           >
             <Undo className="w-4 h-4 mr-2" />
             Undo
@@ -1139,7 +1140,7 @@ const SpreadsheetView = () => {
             style={{ width: `calc(100% - ${chatPanelWidth}px)` }}
           >
             {/* Coordinate display */}
-            <div className="border-b border-border bg-card/30 px-4 py-2 flex items-center justify-between">
+            <div className="border-b border-border/50 bg-background px-6 py-3 flex items-center justify-between">
               <CoordinateDisplay
                 selection={selection}
                 cellContent={
@@ -1186,13 +1187,13 @@ const SpreadsheetView = () => {
 
           {/* Resize handle */}
           <div
-            className="w-1 bg-border hover:bg-border/80 cursor-col-resize transition-colors"
+            className="w-1 bg-border/50 hover:bg-primary/20 cursor-col-resize transition-colors"
             onMouseDown={handleMouseDown}
           />
 
           {/* Chat panel */}
           <div
-            className="bg-card border-l border-border flex flex-col"
+            className="bg-background border-l border-border/50 flex flex-col"
             style={{ width: `${chatPanelWidth}px` }}
           >
             <ChatPanel
@@ -1211,7 +1212,7 @@ const SpreadsheetView = () => {
         </div>
 
         {/* Sheet tabs at bottom */}
-        <div className="h-12 border-t border-border bg-card">
+        <div className="h-12 border-t border-border/50 bg-background">
           <SheetTabs
             sheets={sheets}
             activeSheetId={activeSheetId}
