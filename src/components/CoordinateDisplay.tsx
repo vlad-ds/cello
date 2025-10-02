@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { CellSelection } from "@/pages/Index";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -63,6 +63,7 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
   const displayText = formatSelectionReference(selection);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isQuickLookOpen, setIsQuickLookOpen] = useState(false);
+  const spaceDownTimeRef = useRef(0);
 
   // Check if single cell is selected
   const isSingleCell = selection.start.row === selection.end.row &&
@@ -71,7 +72,6 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
 
   // Spacebar quick look (like macOS) - using simple overlay to avoid focus issues
   useEffect(() => {
-    let spaceDownTime = 0;
     const HOLD_THRESHOLD = 200; // ms to distinguish tap from hold
 
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -84,36 +84,36 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
       }
 
       // Only trigger if spacebar and not typing in an input/textarea
+      // Ignore repeated keydown events when holding the key
       if (e.code === 'Space' &&
           !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
 
-        // Only handle if single cell is selected with content
-        if (!isSingleCell || !cellContent) return;
+        // Always prevent space from being typed into cells when single cell is selected
+        if (isSingleCell) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
 
-        // Prevent default to stop page scrolling
-        e.preventDefault();
-        // Stop propagation to prevent SpreadsheetGrid from treating this as cell editing
-        e.stopPropagation();
-        e.stopImmediatePropagation();
+          // Only process on first keydown (not repeated)
+          if (!e.repeat && spaceDownTimeRef.current === 0) {
+            spaceDownTimeRef.current = Date.now();
 
-        // Record when spacebar was pressed
-        if (spaceDownTime === 0) {
-          spaceDownTime = Date.now();
-
-          // Toggle if already open (tap to close)
-          setIsQuickLookOpen(prev => !prev);
+            // Toggle if already open (tap to close)
+            setIsQuickLookOpen(prev => !prev);
+          }
         }
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && spaceDownTime > 0) {
-        // Stop propagation for keyup too
+      if (e.code === 'Space' && spaceDownTimeRef.current > 0) {
+        // Prevent default and stop propagation for keyup too
+        e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
 
-        const holdDuration = Date.now() - spaceDownTime;
-        spaceDownTime = 0;
+        const holdDuration = Date.now() - spaceDownTimeRef.current;
+        spaceDownTimeRef.current = 0;
 
         // If held for longer than threshold, close overlay (hold mode)
         if (holdDuration >= HOLD_THRESHOLD) {
@@ -184,7 +184,7 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
       </div>
 
       {/* Quick Look Overlay - doesn't steal focus */}
-      {isQuickLookOpen && isSingleCell && cellContent && (
+      {isQuickLookOpen && isSingleCell && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-none">
           <div className="bg-card border border-border rounded-2xl shadow-2xl max-w-2xl w-full mx-4 pointer-events-auto">
             <div className="px-6 py-4 border-b border-border">
@@ -192,7 +192,7 @@ export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayP
             </div>
             <div className="px-6 py-4 max-h-96 overflow-y-auto">
               <div className="text-sm bg-muted/50 rounded-lg p-4 font-mono whitespace-pre-wrap break-words">
-                {cellContent}
+                {cellContent || <span className="text-muted-foreground italic">Empty cell</span>}
               </div>
             </div>
           </div>

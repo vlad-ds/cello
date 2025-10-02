@@ -42,20 +42,65 @@ export const FollowEyesCharacter = ({ size = 48 }: FollowEyesCharacterProps) => 
     <div
       ref={containerRef}
       className="relative flex items-center justify-center transition-transform hover:scale-110"
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size * 1.4 }}
     >
-      {/* Character body - cute blob shape */}
-      <div
-        className="absolute inset-0 rounded-full bg-gradient-to-br from-primary via-primary/90 to-primary/80 shadow-lg"
-        style={{
-          animation: "blob 4s ease-in-out infinite",
-        }}
-      />
+      {/* Cello body - figure-8 shape */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        {/* Upper bout */}
+        <div
+          className="absolute top-[5%] bg-gradient-to-br from-primary via-primary/90 to-primary/80 shadow-lg"
+          style={{
+            width: size * 0.65,
+            height: size * 0.55,
+            borderRadius: '50% 50% 48% 48% / 55% 55% 45% 45%',
+            animation: "gentle-sway 3s ease-in-out infinite",
+          }}
+        />
 
-      {/* Face container */}
-      <div className="relative z-10 flex items-center justify-center w-full h-full">
+        {/* C-bout (waist) */}
+        <div
+          className="absolute top-[38%] bg-gradient-to-br from-primary/95 via-primary/85 to-primary/75"
+          style={{
+            width: size * 0.45,
+            height: size * 0.25,
+            borderRadius: '45% 45% 45% 45% / 50% 50% 50% 50%',
+          }}
+        />
+
+        {/* Lower bout */}
+        <div
+          className="absolute top-[55%] bg-gradient-to-br from-primary via-primary/90 to-primary/80 shadow-lg"
+          style={{
+            width: size * 0.75,
+            height: size * 0.65,
+            borderRadius: '48% 48% 50% 50% / 45% 45% 55% 55%',
+            animation: "gentle-sway 3s ease-in-out infinite 0.15s",
+          }}
+        />
+
+        {/* Strings */}
+        <div className="absolute top-[8%] bottom-[8%] left-1/2 -translate-x-1/2 flex gap-[2px]" style={{ width: size * 0.2 }}>
+          <div className="w-[1px] h-full bg-amber-900/40" />
+          <div className="w-[1px] h-full bg-amber-900/40" />
+          <div className="w-[1px] h-full bg-amber-900/40" />
+          <div className="w-[1px] h-full bg-amber-900/40" />
+        </div>
+
+        {/* Bridge */}
+        <div
+          className="absolute top-[58%] left-1/2 -translate-x-1/2 bg-amber-800/60"
+          style={{
+            width: size * 0.22,
+            height: size * 0.06,
+            borderRadius: '20% 20% 40% 40%',
+          }}
+        />
+      </div>
+
+      {/* Face container on upper bout */}
+      <div className="absolute top-[15%] left-1/2 -translate-x-1/2 z-10 flex flex-col items-center justify-center">
         {/* Eyes container */}
-        <div className="flex gap-[20%] items-center justify-center" style={{ width: '60%' }}>
+        <div className="flex gap-[12px] items-center justify-center">
           {/* Left eye */}
           <div
             className="relative bg-white rounded-full shadow-inner"
@@ -110,27 +155,33 @@ export const FollowEyesCharacter = ({ size = 48 }: FollowEyesCharacterProps) => 
             </div>
           </div>
         </div>
+
+        {/* Mouth - cute smile */}
+        <div
+          className="mt-2 border-b-2 border-white/70 rounded-b-full"
+          style={{
+            width: size * 0.28,
+            height: size * 0.12,
+            borderBottomWidth: size * 0.04,
+          }}
+        />
       </div>
 
-      {/* Mouth - cute smile */}
-      <div
-        className="absolute bottom-[22%] left-1/2 -translate-x-1/2 w-[35%] h-[15%] border-b-2 border-white/70 rounded-b-full"
-        style={{
-          borderBottomWidth: size * 0.04,
-        }}
-      />
+      {/* F-holes (decorative, below the face) */}
+      <div className="absolute top-[35%] left-[35%] w-[8%] h-[12%] border-2 border-amber-900/30 rounded-full" style={{ transform: 'rotate(-5deg)' }} />
+      <div className="absolute top-[35%] right-[35%] w-[8%] h-[12%] border-2 border-amber-900/30 rounded-full" style={{ transform: 'rotate(5deg)' }} />
 
       {/* Blush marks */}
-      <div className="absolute left-[8%] top-[55%] w-[18%] h-[12%] bg-primary-foreground/20 rounded-full blur-[1px]" />
-      <div className="absolute right-[8%] top-[55%] w-[18%] h-[12%] bg-primary-foreground/20 rounded-full blur-[1px]" />
+      <div className="absolute left-[20%] top-[23%] w-[12%] h-[8%] bg-primary-foreground/20 rounded-full blur-[1px]" />
+      <div className="absolute right-[20%] top-[23%] w-[12%] h-[8%] bg-primary-foreground/20 rounded-full blur-[1px]" />
 
       <style>{`
-        @keyframes blob {
+        @keyframes gentle-sway {
           0%, 100% {
-            border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
+            transform: rotate(-0.5deg);
           }
           50% {
-            border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%;
+            transform: rotate(0.5deg);
           }
         }
       `}</style>

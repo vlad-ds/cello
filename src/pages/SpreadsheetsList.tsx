@@ -116,10 +116,16 @@ const SpreadsheetsList = () => {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4">
         {/* Centered greeting section */}
-        <div className="max-w-3xl mx-auto pt-24 pb-16">
-          <h1 className="text-4xl font-medium text-center text-foreground mb-8">
-            Hey there
+        <div className="max-w-4xl mx-auto pt-20 pb-16">
+          <h1 className="text-6xl md:text-7xl font-bold text-center mb-6 leading-tight">
+            <span className="inline-block text-[#D2691E]">
+              Cello
+            </span>
+            <span className="inline-block ml-3">🎻</span>
           </h1>
+          <p className="text-2xl md:text-3xl text-center font-light text-foreground/80 mb-12 max-w-2xl mx-auto leading-relaxed">
+            Spreadsheets should <span className="italic font-medium">spark joy</span> ✨
+          </p>
 
           {/* Search/action bar */}
           <div className="relative mb-8">

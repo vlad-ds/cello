@@ -92,7 +92,7 @@ const welcomeMessage: Message = {
   id: "welcome",
   role: "assistant",
   content:
-    "Hey there! ✨ I'm **Celly**, your spreadsheet sidekick! I'm here to help you wrangle data, crunch numbers, and make sense of all those cells. Think of me as your friendly neighborhood spreadsheet wizard! 🪄\n\nNeed help? Just ask! I can sum columns, calculate averages, spot trends, and even help you find that one cell you've been looking for. Let's make spreadsheets fun together! 🎉",
+    "Hey there! ✨ I'm **Cello**, your spreadsheet sidekick! I'm here to help you wrangle data, crunch numbers, and make sense of all those cells. Think of me as your friendly neighborhood spreadsheet wizard! 🪄\n\nNeed help? Just ask! I can sum columns, calculate averages, spot trends, and even help you find that one cell you've been looking for. Let's make spreadsheets fun together! 🎉",
   timestamp: new Date(),
   contextRange: null,
   toolCalls: null,
@@ -463,7 +463,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
           <div className="flex items-center gap-3">
             <FollowEyesCharacter size={48} />
             <div>
-              <h3 className="font-semibold text-foreground">Celly</h3>
+              <h3 className="font-semibold text-foreground">Cello</h3>
               <p className="text-sm text-muted-foreground">Your spreadsheet sidekick ✨</p>
             </div>
           </div>
@@ -840,7 +840,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selectedCells, spre
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Celly anything... ✨"
+            placeholder="Ask Cello anything... ✨"
             className="flex-1"
             disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
           />
