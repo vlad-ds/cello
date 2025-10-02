@@ -7,6 +7,7 @@ import { SheetTabs } from "@/components/SheetTabs";
 import { CoordinateDisplay } from "@/components/CoordinateDisplay";
 import { ChatPanel } from "@/components/ChatPanel";
 import { FileImport } from "@/components/FileImport";
+import { KeyboardShortcuts } from "@/components/KeyboardShortcuts";
 import {
   dataClient,
   isSupabaseBackend,
@@ -1116,6 +1117,7 @@ const SpreadsheetView = () => {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <KeyboardShortcuts />
           <FileImport onImport={handleFileImport} />
           <Button
             onClick={undo}

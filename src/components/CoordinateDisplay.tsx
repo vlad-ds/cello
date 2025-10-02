@@ -1,4 +1,8 @@
+import { useState, useEffect } from "react";
 import { CellSelection } from "@/pages/Index";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Maximize2 } from "lucide-react";
 
 interface CoordinateDisplayProps {
   selection: CellSelection;
@@ -57,22 +61,143 @@ const formatSelectionReference = (selection: CellSelection): string => {
 
 export const CoordinateDisplay = ({ selection, cellContent }: CoordinateDisplayProps) => {
   const displayText = formatSelectionReference(selection);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isQuickLookOpen, setIsQuickLookOpen] = useState(false);
+
+  // Check if single cell is selected
+  const isSingleCell = selection.start.row === selection.end.row &&
+                       selection.start.col === selection.end.col &&
+                       selection.type === 'cell';
+
+  // Spacebar quick look (like macOS) - using simple overlay to avoid focus issues
+  useEffect(() => {
+    let spaceDownTime = 0;
+    const HOLD_THRESHOLD = 200; // ms to distinguish tap from hold
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Handle Escape to close preview
+      if (e.code === 'Escape' && isQuickLookOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsQuickLookOpen(false);
+        return;
+      }
+
+      // Only trigger if spacebar and not typing in an input/textarea
+      if (e.code === 'Space' &&
+          !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+
+        // Only handle if single cell is selected with content
+        if (!isSingleCell || !cellContent) return;
+
+        // Prevent default to stop page scrolling
+        e.preventDefault();
+        // Stop propagation to prevent SpreadsheetGrid from treating this as cell editing
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        // Record when spacebar was pressed
+        if (spaceDownTime === 0) {
+          spaceDownTime = Date.now();
+
+          // Toggle if already open (tap to close)
+          setIsQuickLookOpen(prev => !prev);
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && spaceDownTime > 0) {
+        // Stop propagation for keyup too
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        const holdDuration = Date.now() - spaceDownTime;
+        spaceDownTime = 0;
+
+        // If held for longer than threshold, close overlay (hold mode)
+        if (holdDuration >= HOLD_THRESHOLD) {
+          setIsQuickLookOpen(false);
+        }
+        // else: tap mode - state was already toggled in keydown
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    window.addEventListener('keyup', handleKeyUp, { capture: true });
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleKeyUp, { capture: true });
+    };
+  }, [isSingleCell, cellContent, isQuickLookOpen]);
+
+  // Truncate cell content if it's too long
+  const maxLength = 100;
+  const shouldTruncate = cellContent && cellContent.length > maxLength;
+  const truncatedContent = shouldTruncate
+    ? cellContent.substring(0, maxLength) + "..."
+    : cellContent;
 
   return (
-    <div className="bg-coordinate-background border-b border-border px-4 py-2">
-      <div className="flex items-center gap-4">
-        <div className="text-sm text-muted-foreground flex-shrink-0">
-          Selected:
-        </div>
-        <div className="text-sm font-mono font-medium bg-card border border-border rounded px-2 py-1 flex-shrink-0">
-          {displayText}
-        </div>
-        {cellContent && (
-          <div className="text-sm bg-card border border-border rounded px-2 py-1 flex-1 overflow-x-auto whitespace-nowrap">
-            {cellContent}
+    <>
+      <div className="bg-coordinate-background border-b border-border px-4 py-2">
+        <div className="flex items-center gap-3">
+          <div className="text-sm text-muted-foreground flex-shrink-0">
+            Selected:
           </div>
-        )}
+          <div className="text-sm font-mono font-medium bg-card border border-border rounded-lg px-2 py-1 flex-shrink-0">
+            {displayText}
+          </div>
+          {cellContent && (
+            <>
+              <div className="text-sm bg-card border border-border rounded-lg px-3 py-1 flex-1 min-w-0 overflow-hidden">
+                <div className="truncate">
+                  {truncatedContent}
+                </div>
+              </div>
+              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="flex-shrink-0 h-8 px-2"
+                    title="View full content"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>Cell Content - {displayText}</DialogTitle>
+                  </DialogHeader>
+                  <div className="mt-4 max-h-96 overflow-y-auto">
+                    <div className="text-sm bg-muted/50 rounded-lg p-4 font-mono whitespace-pre-wrap break-words">
+                      {cellContent}
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+
+      {/* Quick Look Overlay - doesn't steal focus */}
+      {isQuickLookOpen && isSingleCell && cellContent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-none">
+          <div className="bg-card border border-border rounded-2xl shadow-2xl max-w-2xl w-full mx-4 pointer-events-auto">
+            <div className="px-6 py-4 border-b border-border">
+              <h3 className="font-medium text-foreground">Cell Content - {displayText}</h3>
+            </div>
+            <div className="px-6 py-4 max-h-96 overflow-y-auto">
+              <div className="text-sm bg-muted/50 rounded-lg p-4 font-mono whitespace-pre-wrap break-words">
+                {cellContent}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 };
