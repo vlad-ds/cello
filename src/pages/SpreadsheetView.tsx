@@ -159,15 +159,23 @@ const SpreadsheetView = () => {
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
 
-  const resolveRowIndex = useCallback(
-    (rowIndex: number) => {
-      const mapping = activeSheet?.displayRowNumbers;
-      if (mapping && mapping[rowIndex] !== undefined) {
-        return mapping[rowIndex];
+  const resolveRowWithMapping = useCallback((rowIndex: number, mapping?: number[]) => {
+    if (mapping && mapping.length > 0) {
+      const mapped = mapping[rowIndex];
+      if (mapped !== undefined) {
+        return mapped;
       }
-      return rowIndex;
-    },
-    [activeSheet?.displayRowNumbers]
+
+      const lastKnown = mapping[mapping.length - 1];
+      const offset = rowIndex - mapping.length + 1;
+      return lastKnown + Math.max(1, offset);
+    }
+    return rowIndex;
+  }, []);
+
+  const resolveRowIndex = useCallback(
+    (rowIndex: number) => resolveRowWithMapping(rowIndex, activeSheet?.displayRowNumbers),
+    [activeSheet?.displayRowNumbers, resolveRowWithMapping]
   );
 
   const toVisualRowIndex = useCallback(
@@ -948,14 +956,31 @@ const SpreadsheetView = () => {
     // Handle cell highlights - collect all highlight calls
     const highlightCalls = toolCalls.filter(call => call?.kind === 'highlight' && call.status === 'ok');
     if (hasClear || highlightCalls.length > 0) {
+      const currentDisplayMapping = activeSheet?.displayRowNumbers;
+
+      const toActualRowNumbers = (targetSheetId: string | undefined, rows?: number[] | undefined): number[] | undefined => {
+        if (!rows || rows.length === 0) return undefined;
+      if (!targetSheetId || targetSheetId !== activeSheet?.id) {
+        return rows;
+      }
+      if (!currentDisplayMapping || currentDisplayMapping.length === 0) {
+        return rows;
+      }
+
+      return rows.map((rowIndex) => resolveRowWithMapping(rowIndex, currentDisplayMapping));
+    };
+
       const newHighlights = highlightCalls
         .filter(call => call.sheetId && (call.range || call.condition || call.rowNumbers))
         .map(call => {
           const normalizedRange = call.range?.trim();
           const normalizedRowNumbers = sanitizeRowNumbers(
-            call.rowNumbers && call.rowNumbers.length > 0
-              ? call.rowNumbers.map((n) => n - 1)
-              : parseRowRangeToZeroBased(normalizedRange)
+            toActualRowNumbers(
+              call.sheetId,
+              call.rowNumbers && call.rowNumbers.length > 0
+                ? call.rowNumbers.map((n) => n - 1)
+                : parseRowRangeToZeroBased(normalizedRange)
+            )
           );
 
           return {
