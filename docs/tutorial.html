@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cello Tutorial - Spreadsheets Made Joyful ✨</title>
+    <meta name="description" content="Learn how to use Cello, your friendly AI-powered spreadsheet sidekick. A complete guide to creating, analyzing, and working with data joyfully.">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #020817;
+            background: linear-gradient(135deg, hsl(20, 100%, 70%) 0%, hsl(25, 95%, 65%) 100%);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, hsl(20, 100%, 70%) 0%, hsl(25, 95%, 65%) 100%);
+            color: white;
+            padding: 60px 40px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        header p {
+            font-size: 1.3em;
+            opacity: 0.95;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        h2 {
+            color: hsl(20, 100%, 50%);
+            margin-top: 40px;
+            margin-bottom: 20px;
+            font-size: 2em;
+            border-bottom: 3px solid hsl(20, 100%, 70%);
+            padding-bottom: 10px;
+        }
+
+        h3 {
+            color: hsl(25, 95%, 45%);
+            margin-top: 30px;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+
+        p {
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }
+
+        code {
+            background: #f4f4f4;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.95em;
+            color: #d63384;
+        }
+
+        pre {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 20px 0;
+            font-family: 'Monaco', 'Courier New', monospace;
+            line-height: 1.5;
+        }
+
+        pre code {
+            background: transparent;
+            color: inherit;
+            padding: 0;
+        }
+
+        .feature-box {
+            background: hsl(30, 20%, 98%);
+            border-left: 4px solid hsl(20, 100%, 70%);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .feature-box h4 {
+            color: hsl(20, 100%, 50%);
+            margin-bottom: 10px;
+        }
+
+        ul, ol {
+            margin-left: 30px;
+            margin-bottom: 20px;
+        }
+
+        li {
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .tip {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .tip strong {
+            color: #2196F3;
+        }
+
+        .warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .warning strong {
+            color: #f57c00;
+        }
+
+        .button {
+            display: inline-block;
+            background: hsl(20, 100%, 70%);
+            color: white;
+            padding: 12px 30px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            transition: all 0.3s;
+            margin: 10px 10px 10px 0;
+        }
+
+        .button:hover {
+            background: hsl(20, 100%, 60%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px hsla(20, 100%, 70%, 0.4);
+        }
+
+        footer {
+            background: hsl(30, 20%, 98%);
+            padding: 30px;
+            text-align: center;
+            color: hsl(215.4, 16.3%, 46.9%);
+        }
+
+        .toc {
+            background: hsl(30, 20%, 98%);
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+
+        .toc h3 {
+            margin-top: 0;
+            color: hsl(20, 100%, 50%);
+        }
+
+        .toc ul {
+            list-style: none;
+            margin-left: 0;
+        }
+
+        .toc li {
+            margin-bottom: 8px;
+        }
+
+        .toc a {
+            color: hsl(20, 100%, 50%);
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .toc a:hover {
+            color: hsl(20, 100%, 60%);
+            text-decoration: underline;
+        }
+
+        .emoji {
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Welcome to Cello! <span class="emoji">✨</span></h1>
+            <p>Your friendly AI-powered spreadsheet sidekick</p>
+        </header>
+
+        <div class="content">
+            <div class="toc">
+                <h3>Table of Contents</h3>
+                <ul>
+                    <li><a href="#what-is-cello">What is Cello?</a></li>
+                    <li><a href="#getting-started">Getting Started</a></li>
+                    <li><a href="#basic-features">Basic Spreadsheet Features</a></li>
+                    <li><a href="#ai-assistant">AI Chat Assistant</a></li>
+                    <li><a href="#ai-function">AI() SQL Function</a></li>
+                    <li><a href="#advanced-features">Advanced Features</a></li>
+                    <li><a href="#keyboard-shortcuts">Keyboard Shortcuts</a></li>
+                    <li><a href="#tips-tricks">Tips & Tricks</a></li>
+                </ul>
+            </div>
+
+            <section id="what-is-cello">
+                <h2><span class="emoji">🎵</span> What is Cello?</h2>
+                <p>
+                    Cello is a modern, AI-powered spreadsheet application that makes working with data actually fun!
+                    Think of traditional spreadsheets, but with a friendly AI assistant built right in, ready to help
+                    you analyze data, create visualizations, and answer questions about your information.
+                </p>
+                <p>
+                    Built with React and TypeScript, Cello runs locally on your machine with a SQLite database,
+                    ensuring your data stays private and accessible even offline.
+                </p>
+            </section>
+
+            <section id="getting-started">
+                <h2><span class="emoji">🚀</span> Getting Started</h2>
+
+                <h3>Installation & Setup</h3>
+                <p>First, make sure you have Node.js installed. Then:</p>
+
+                <pre><code># Clone the repository
+git clone &lt;YOUR_GIT_URL&gt;
+cd tabulate-my-cells
+
+# Install dependencies
+npm install
+
+# Start the backend API server (required!)
+npm run server:watch
+
+# In another terminal, start the frontend
+npm run dev</code></pre>
+
+                <p>Your Cello app will be running at <code>http://localhost:8080</code>!</p>
+
+                <div class="warning">
+                    <strong>⚠️ Important:</strong> Both servers must be running! The backend API (port 4000) handles your
+                    data, while the frontend (port 8080) provides the user interface.
+                </div>
+
+                <h3>Enabling AI Features</h3>
+                <p>To unlock Cello's AI superpowers, add your API keys to the <code>.env</code> file:</p>
+
+                <pre><code># For the AI Chat Assistant (recommended: Claude Sonnet 4.5)
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+AI_PROVIDER=anthropic
+
+# Or use Gemini Flash instead
+GEMINI_API_KEY=your_gemini_api_key_here
+AI_PROVIDER=gemini
+
+# For the AI() function in SQL queries (recommended: OpenAI)
+OPENAI_API_KEY=your_openai_api_key_here
+AI_FUNCTION_PROVIDER=openai</code></pre>
+
+                <div class="tip">
+                    <strong>💡 Tip:</strong> Claude Sonnet 4.5 (Anthropic) is recommended for the chat assistant as it's
+                    more reliable with tool calling. OpenAI's GPT-4o-mini is perfect for the AI() function - it's fast
+                    and incredibly cost-effective!
+                </div>
+            </section>
+
+            <section id="basic-features">
+                <h2><span class="emoji">📊</span> Basic Spreadsheet Features</h2>
+
+                <h3>Creating & Managing Sheets</h3>
+                <ul>
+                    <li>Click the <strong>+ button</strong> in the sheet tabs to create a new sheet</li>
+                    <li>Right-click on a sheet tab to rename or delete it</li>
+                    <li>Switch between sheets by clicking on their tabs</li>
+                </ul>
+
+                <h3>Working with Cells</h3>
+                <ul>
+                    <li><strong>Edit a cell:</strong> Click on it and start typing</li>
+                    <li><strong>Select multiple cells:</strong> Click and drag, or Shift+Click</li>
+                    <li><strong>Clear cells:</strong> Select cells and press Delete or Backspace</li>
+                    <li><strong>Copy/Paste:</strong> Use standard Ctrl+C / Ctrl+V (Cmd on Mac)</li>
+                </ul>
+
+                <h3>Managing Columns & Rows</h3>
+                <ul>
+                    <li><strong>Add a column:</strong> Click the + button in the column header</li>
+                    <li><strong>Rename a column:</strong> Double-click the column header</li>
+                    <li><strong>Remove a column:</strong> Right-click the column header and select "Remove"</li>
+                    <li><strong>Add rows:</strong> Click the + button at the bottom of the grid</li>
+                    <li><strong>Resize columns/rows:</strong> Drag the borders between headers</li>
+                </ul>
+
+                <div class="feature-box">
+                    <h4>Quick Look Feature</h4>
+                    <p>Press <code>Space</code> on a selected cell to open Quick Look - a macOS-style preview
+                    that shows the full content of the cell in a beautiful modal. Perfect for viewing long text!</p>
+                </div>
+            </section>
+
+            <section id="ai-assistant">
+                <h2><span class="emoji">🤖</span> AI Chat Assistant</h2>
+                <p>
+                    This is where Cello really shines! The AI assistant lives in the right panel and can help you
+                    query, analyze, and manipulate your data using natural language.
+                </p>
+
+                <h3>What Can the AI Do?</h3>
+                <div class="feature-box">
+                    <h4>🔍 Query Your Data</h4>
+                    <p>Ask questions like:</p>
+                    <ul>
+                        <li>"What's the average of the revenue column?"</li>
+                        <li>"Show me all rows where the status is 'pending'"</li>
+                        <li>"Find the top 5 customers by total spend"</li>
+                    </ul>
+                </div>
+
+                <div class="feature-box">
+                    <h4>✏️ Modify Data</h4>
+                    <p>Make changes through conversation:</p>
+                    <ul>
+                        <li>"Set all rows with quantity > 100 to status 'bulk order'"</li>
+                        <li>"Add a new column called 'profit_margin'"</li>
+                        <li>"Update the price column by multiplying it by 1.1"</li>
+                    </ul>
+                </div>
+
+                <div class="feature-box">
+                    <h4>🎨 Highlight Important Data</h4>
+                    <p>Make patterns visible:</p>
+                    <ul>
+                        <li>"Highlight the highest value in the sales column in green"</li>
+                        <li>"Mark all overdue items in red"</li>
+                        <li>"Show me cells in the B column that contain 'urgent' in yellow"</li>
+                    </ul>
+                    <p><em>Multiple highlights can layer with different colors!</em></p>
+                </div>
+
+                <div class="feature-box">
+                    <h4>🔎 Filter & Focus</h4>
+                    <p>Hide irrelevant data:</p>
+                    <ul>
+                        <li>"Show only rows where revenue > 1000"</li>
+                        <li>"Filter to customers from California"</li>
+                        <li>"Clear all filters"</li>
+                    </ul>
+                </div>
+
+                <h3>Using the Chat Assistant</h3>
+                <ol>
+                    <li><strong>Select relevant cells</strong> - The AI sees your selection as context</li>
+                    <li><strong>Type your question or request</strong> in the chat input</li>
+                    <li><strong>Press Enter</strong> to send</li>
+                    <li>Watch as the AI analyzes your request and takes action!</li>
+                </ol>
+
+                <div class="tip">
+                    <strong>💡 Pro Tip:</strong> The AI maintains conversation history, so you can ask follow-up
+                    questions like "Now do the same for the profit column" and it'll understand the context!
+                </div>
+
+                <h3>How It Works Behind the Scenes</h3>
+                <p>
+                    The AI assistant uses <strong>tool calling</strong> (function calling) to interact with your spreadsheet.
+                    It has access to seven powerful tools:
+                </p>
+                <ul>
+                    <li><code>executeSheetSql</code> - Read data with SELECT queries</li>
+                    <li><code>mutateSheetSql</code> - Modify data with UPDATE, INSERT, ALTER TABLE</li>
+                    <li><code>deleteRows</code> - Remove rows by number or condition</li>
+                    <li><code>highlights_add</code> - Add colored highlights to cells</li>
+                    <li><code>highlights_clear</code> - Remove all highlights</li>
+                    <li><code>filter_add</code> - Hide rows that don't match a condition</li>
+                    <li><code>filter_clear</code> - Show all rows again</li>
+                </ul>
+
+                <div class="warning">
+                    <strong>⚠️ Note:</strong> Highlights and filters are temporary - they'll disappear when you refresh
+                    the page. Data modifications (updates, inserts, deletes) are permanent and saved to your database.
+                </div>
+            </section>
+
+            <section id="ai-function">
+                <h2><span class="emoji">✨</span> AI() SQL Function</h2>
+                <p>
+                    This is a game-changer! Cello has a built-in <code>AI()</code> function you can use in SQL queries
+                    to process data with artificial intelligence.
+                </p>
+
+                <h3>Basic Usage</h3>
+                <pre><code>SELECT AI('Classify sentiment: ' || review_text)
+FROM customer_reviews</code></pre>
+
+                <p>This sends each review to AI for sentiment analysis!</p>
+
+                <h3>Structured Outputs</h3>
+                <p>You can specify the output format:</p>
+
+                <h4>Boolean Results</h4>
+                <pre><code>SELECT AI('Is this spam?', 'boolean')
+FROM messages</code></pre>
+                <p>Returns <code>true</code> or <code>false</code></p>
+
+                <h4>Enum/Category Results</h4>
+                <pre><code>SELECT AI('Categorize priority: ' || task_text, '["urgent","high","normal","low"]')
+FROM tasks</code></pre>
+                <p>Returns one of the specified categories</p>
+
+                <h3>Real-World Examples</h3>
+
+                <div class="feature-box">
+                    <h4>Data Enrichment</h4>
+                    <pre><code>SELECT
+  company_name,
+  AI('What industry is ' || company_name || ' in?') as industry
+FROM companies</code></pre>
+                </div>
+
+                <div class="feature-box">
+                    <h4>Text Classification</h4>
+                    <pre><code>SELECT
+  email,
+  AI('Is this a work or personal email?', '["work","personal"]') as type
+FROM email_list</code></pre>
+                </div>
+
+                <div class="feature-box">
+                    <h4>Intelligent Filtering</h4>
+                    <pre><code>SELECT *
+FROM support_tickets
+WHERE AI('Is this urgent?', 'boolean') = true</code></pre>
+                </div>
+
+                <div class="tip">
+                    <strong>💡 Cost-Effective:</strong> With OpenAI's GPT-4o-mini (default), processing costs about
+                    15¢ per million input tokens. That's incredibly affordable for bulk data processing!
+                </div>
+
+                <h3>Using AI() Function via Chat</h3>
+                <p>Just ask the AI assistant to run a query with the <code>AI()</code> function:</p>
+                <blockquote style="border-left: 4px solid #667eea; padding-left: 20px; margin: 20px 0;">
+                    "Run this query: SELECT product_name, AI('Suggest a marketing slogan: ' || product_name) FROM products"
+                </blockquote>
+            </section>
+
+            <section id="advanced-features">
+                <h2><span class="emoji">⚡</span> Advanced Features</h2>
+
+                <h3>AI-Powered Fill Handle</h3>
+                <p>
+                    Select a cell and drag the fill handle (bottom-right corner) to intelligently extend patterns.
+                    Cello can detect sequences, formulas, and even use AI to predict the next values!
+                </p>
+                <ul>
+                    <li>Drag to extend number sequences (1, 2, 3...)</li>
+                    <li>Extend dates and patterns</li>
+                    <li>AI suggests intelligent completions</li>
+                    <li>Optional confirmation dialog (Cmd/Ctrl+Enter to skip)</li>
+                </ul>
+
+                <h3>Highlight Layering</h3>
+                <p>
+                    Multiple highlights can coexist with different colors. For example, you can highlight
+                    the highest value in green AND the lowest in red simultaneously!
+                </p>
+                <pre><code># The AI can do this automatically:
+"Highlight the highest grade in green and the lowest in red"</code></pre>
+
+                <h3>Row Deletion with Stable Numbering</h3>
+                <p>
+                    When you delete rows, Cello keeps row numbers stable. If you delete row 7, you'll see:
+                    rows 5, 6, 8, 9... (not renumbered). This helps maintain references and consistency.
+                </p>
+
+                <h3>Conversation Persistence</h3>
+                <p>
+                    Your chat history with the AI is saved per spreadsheet. Come back later and continue
+                    where you left off!
+                </p>
+            </section>
+
+            <section id="keyboard-shortcuts">
+                <h2><span class="emoji">⌨️</span> Keyboard Shortcuts</h2>
+                <ul>
+                    <li><code>Ctrl+Z</code> / <code>Cmd+Z</code> - Undo</li>
+                    <li><code>Ctrl+C</code> / <code>Cmd+C</code> - Copy</li>
+                    <li><code>Ctrl+V</code> / <code>Cmd+V</code> - Paste</li>
+                    <li><code>Delete</code> / <code>Backspace</code> - Clear selected cells</li>
+                    <li><code>Space</code> - Quick Look (view cell content)</li>
+                    <li><code>Ctrl+Enter</code> / <code>Cmd+Enter</code> - Quick fill (skip confirmation)</li>
+                    <li><code>Arrow keys</code> - Navigate cells</li>
+                    <li><code>Enter</code> - Edit selected cell</li>
+                    <li><code>Esc</code> - Cancel editing</li>
+                </ul>
+            </section>
+
+            <section id="tips-tricks">
+                <h2><span class="emoji">💎</span> Tips & Tricks</h2>
+
+                <h3>Best Practices for AI Chat</h3>
+                <ol>
+                    <li><strong>Be specific:</strong> "Average the sales column" is better than "calculate average"</li>
+                    <li><strong>Select context:</strong> Select relevant cells before asking questions</li>
+                    <li><strong>Use column names:</strong> Refer to columns by their header names</li>
+                    <li><strong>Ask follow-ups:</strong> The AI remembers your conversation!</li>
+                </ol>
+
+                <h3>Working with Large Datasets</h3>
+                <ul>
+                    <li>Use filters to focus on relevant data</li>
+                    <li>Ask the AI to create summary queries</li>
+                    <li>Export results using SQL: <code>SELECT ... INTO ...</code></li>
+                </ul>
+
+                <h3>Data Privacy</h3>
+                <p>
+                    Your data lives in a local SQLite database (<code>data/app.db</code>). To reset everything,
+                    simply delete this file. Nothing is sent to external servers except what you explicitly
+                    send to AI providers through chat or the AI() function.
+                </p>
+
+                <h3>Debugging AI Interactions</h3>
+                <p>
+                    AI request/response logs are saved in <code>data/logs/</code>. Check these files if you're
+                    curious about what's happening behind the scenes:
+                </p>
+                <ul>
+                    <li><code>anthropic-request.log</code> - Claude API requests</li>
+                    <li><code>gemini-request.log</code> - Gemini API requests</li>
+                    <li><code>ai-function-*.log</code> - AI() function calls</li>
+                </ul>
+
+                <h3>Switching AI Providers</h3>
+                <p>Edit your <code>.env</code> file and restart the server:</p>
+                <pre><code># For chat assistant
+AI_PROVIDER=anthropic  # or 'gemini'
+
+# For AI() function
+AI_FUNCTION_PROVIDER=openai  # or 'gemini'</code></pre>
+
+                <div class="tip">
+                    <strong>💡 Recommended Combo:</strong> Anthropic (Claude Sonnet 4.5) for chat + OpenAI (GPT-4o-mini)
+                    for AI() function gives you the best of both worlds: intelligent conversation + cost-effective
+                    bulk processing.
+                </div>
+            </section>
+
+            <section id="troubleshooting">
+                <h2><span class="emoji">🔧</span> Troubleshooting</h2>
+
+                <div class="feature-box">
+                    <h4>Backend not connecting?</h4>
+                    <p>Make sure <code>npm run server:watch</code> is running in a separate terminal. The frontend
+                    can't work without the API!</p>
+                </div>
+
+                <div class="feature-box">
+                    <h4>AI not responding?</h4>
+                    <ul>
+                        <li>Check that your API keys are set in <code>.env</code></li>
+                        <li>Verify the API provider is set correctly</li>
+                        <li>Restart <code>npm run server:watch</code> after changing .env</li>
+                        <li>Check <code>data/logs/</code> for error messages</li>
+                    </ul>
+                </div>
+
+                <div class="feature-box">
+                    <h4>Data disappeared?</h4>
+                    <p>Check if <code>data/app.db</code> still exists. If it was deleted, your data is gone
+                    (no backups by default). Consider backing up this file regularly!</p>
+                </div>
+            </section>
+
+            <section id="next-steps">
+                <h2><span class="emoji">🎯</span> Next Steps</h2>
+                <p>Now that you know the basics, try these fun exercises:</p>
+                <ol>
+                    <li>Create a budget spreadsheet and ask the AI to analyze your spending patterns</li>
+                    <li>Import some customer data and use the AI() function to categorize it</li>
+                    <li>Build a task tracker and use highlights to mark urgent items</li>
+                    <li>Experiment with the fill handle to see AI's predictions</li>
+                    <li>Ask the AI to create a pivot table-style summary of your data</li>
+                </ol>
+
+                <p style="text-align: center; margin-top: 40px;">
+                    <a href="https://github.com/anthropics/claude-code" class="button">View Source on GitHub</a>
+                    <a href="/" class="button">Launch Cello</a>
+                </p>
+            </section>
+        </div>
+
+        <footer>
+            <p><strong>Cello - Spreadsheets Made Joyful ✨</strong></p>
+            <p>Built with React, TypeScript, SQLite, and AI superpowers</p>
+            <p style="margin-top: 15px; font-size: 0.9em;">
+                Have questions? Check the <a href="https://docs.anthropic.com" style="color: #667eea;">Anthropic docs</a>
+                or <a href="https://ai.google.dev/gemini-api/docs" style="color: #667eea;">Gemini API docs</a>
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
