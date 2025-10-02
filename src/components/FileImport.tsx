@@ -37,10 +37,12 @@ export const FileImport = ({ onImport, children }: FileImportProps) => {
         cell ? String(cell) : `COLUMN_${idx + 1}`
       );
 
-      // Rest as data rows, convert all cells to strings
-      const rows = jsonData.slice(1).map(row =>
-        (row as unknown[]).map(cell => cell != null ? String(cell) : "")
-      );
+      // Rest as data rows, convert all cells to strings and filter out empty rows
+      const rows = jsonData.slice(1)
+        .map(row =>
+          (row as unknown[]).map(cell => cell != null ? String(cell) : "")
+        )
+        .filter(row => row.some(cell => cell.trim() !== "")); // Only keep rows with at least one non-empty cell
 
       onImport({
         sheetName: firstSheetName || "Imported Sheet",

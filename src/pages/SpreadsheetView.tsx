@@ -23,6 +23,71 @@ import { useSpreadsheetSync } from "@/hooks/useSpreadsheetSync";
 import { CellData, SheetData, CellSelection, Action } from "./Index";
 import { toast } from "@/components/ui/sonner";
 
+const ROW_RANGE_REGEX = /^\s*(\d+)(?::(\d+))?\s*$/;
+
+const parseRowRangeToZeroBased = (range?: string): number[] | undefined => {
+  if (!range) return undefined;
+  const match = range.match(ROW_RANGE_REGEX);
+  if (!match) return undefined;
+
+  const start = parseInt(match[1], 10);
+  const end = match[2] ? parseInt(match[2], 10) : start;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined;
+
+  const lower = Math.min(start, end);
+  const upper = Math.max(start, end);
+  const rows: number[] = [];
+
+  for (let row = lower; row <= upper; row++) {
+    const zeroBased = row - 1;
+    if (zeroBased >= 0) {
+      rows.push(zeroBased);
+    }
+  }
+
+  return rows.length > 0 ? rows : undefined;
+};
+
+const sanitizeRowNumbers = (rows?: number[]): number[] | undefined => {
+  if (!rows) return undefined;
+  const unique = Array.from(new Set(rows.filter((row) => Number.isInteger(row) && row >= 0)));
+  return unique.length > 0 ? unique : undefined;
+};
+
+const highlightKey = (highlight: CellHighlight) => {
+  const rangeKey = highlight.range ? highlight.range.trim().toUpperCase() : "";
+  const conditionKey = highlight.condition ? highlight.condition.trim() : "";
+  const rowsKey = highlight.rowNumbers ? highlight.rowNumbers.join(",") : "";
+  const colorKey = (highlight.color || "").toLowerCase();
+  return `${highlight.sheetId}|${rangeKey}|${conditionKey}|${rowsKey}|${colorKey}`;
+};
+
+const normalizeHighlight = (highlight: CellHighlight): CellHighlight => ({
+  sheetId: highlight.sheetId,
+  range: highlight.range ? highlight.range.trim().toUpperCase() : undefined,
+  condition: highlight.condition ? highlight.condition.trim() : undefined,
+  rowNumbers: sanitizeRowNumbers(highlight.rowNumbers),
+  color: (highlight.color || 'yellow').toLowerCase(),
+  message: highlight.message ?? null,
+});
+
+const mergeHighlights = (existing: CellHighlight[], incoming: CellHighlight[]) => {
+  if (incoming.length === 0 && existing.length === 0) return existing;
+  const map = new Map<string, CellHighlight>();
+
+  for (const highlight of existing) {
+    const normalized = normalizeHighlight(highlight);
+    map.set(highlightKey(normalized), normalized);
+  }
+
+  for (const highlight of incoming) {
+    const normalized = normalizeHighlight(highlight);
+    map.set(highlightKey(normalized), normalized);
+  }
+
+  return Array.from(map.values());
+};
+
 const SpreadsheetView = () => {
   const { spreadsheetId } = useParams();
   const navigate = useNavigate();
@@ -83,7 +148,9 @@ const SpreadsheetView = () => {
   const [activeHighlights, setActiveHighlights] = useState<CellHighlight[]>(() => {
     try {
       const saved = localStorage.getItem(`highlights-${spreadsheetId}`);
-      return saved ? JSON.parse(saved) : [];
+      if (!saved) return [];
+      const parsed = JSON.parse(saved) as CellHighlight[];
+      return mergeHighlights([], parsed);
     } catch {
       return [];
     }
@@ -91,6 +158,31 @@ const SpreadsheetView = () => {
   const [activeFilters, setActiveFilters] = useState<{ sheetId: string; filters: FilterCondition[] }[]>([]);
 
   const activeSheet = sheets.find(sheet => sheet.id === activeSheetId);
+
+  const resolveRowIndex = useCallback(
+    (rowIndex: number) => {
+      const mapping = activeSheet?.displayRowNumbers;
+      if (mapping && mapping[rowIndex] !== undefined) {
+        return mapping[rowIndex];
+      }
+      return rowIndex;
+    },
+    [activeSheet?.displayRowNumbers]
+  );
+
+  const toVisualRowIndex = useCallback(
+    (actualRow: number) => {
+      const mapping = activeSheet?.displayRowNumbers;
+      if (mapping && mapping.length > 0) {
+        const visualIndex = mapping.indexOf(actualRow);
+        if (visualIndex >= 0) {
+          return visualIndex;
+        }
+      }
+      return actualRow;
+    },
+    [activeSheet?.displayRowNumbers]
+  );
 
   // Calculate effective row count: when filters are active, only render rows with data
   // Otherwise, calculate actual row count from cells
@@ -656,8 +748,9 @@ const SpreadsheetView = () => {
     const maxCol = Math.max(selection.start.col, selection.end.col);
     
     for (let row = minRow; row <= maxRow; row++) {
+      const actualRow = resolveRowIndex(row);
       for (let col = minCol; col <= maxCol; col++) {
-        updateCell(row, col, "");
+        updateCell(actualRow, col, "");
       }
     }
   };
@@ -709,7 +802,7 @@ const SpreadsheetView = () => {
 
   const getSelectedCellsContent = () => {
     if (!activeSheet) return {};
-    
+
     const minRow = Math.min(selection.start.row, selection.end.row);
     const maxRow = Math.max(selection.start.row, selection.end.row);
     const minCol = Math.min(selection.start.col, selection.end.col);
@@ -719,24 +812,34 @@ const SpreadsheetView = () => {
     
     for (let row = minRow; row <= maxRow; row++) {
       for (let col = minCol; col <= maxCol; col++) {
-        const cellKey = `${row}-${col}`;
+        const actualRow = resolveRowIndex(row);
+        const cellKey = `${actualRow}-${col}`;
         const rawValue = activeSheet.cells[cellKey];
         const cellValue = rawValue === undefined || rawValue === null ? '' : String(rawValue);
         if (cellValue.trim()) {
           const columnLetter = String.fromCharCode(65 + col);
-          const readableKey = `${columnLetter}${row + 1}`;
+          const readableKey = `${columnLetter}${actualRow + 1}`;
           selectedCells[readableKey] = cellValue;
         }
       }
     }
-    
+
     return selectedCells;
   };
+
+  const focusedCellContent =
+    activeSheet &&
+    selection.start.row === selection.end.row &&
+    selection.start.col === selection.end.col
+      ? activeSheet.cells[`${resolveRowIndex(selection.start.row)}-${selection.start.col}`]
+      : undefined;
 
   const transformTableDataToSheetState = (tableData: SheetTableData | null | undefined) => {
     const cells: { [key: string]: string } = {};
     const columnHeaders: string[] = [];
     const hasActiveFilters = tableData?.filters && tableData.filters.length > 0;
+    const rowMappings: number[] = [];
+    const seenRows = new Set<number>();
 
     if (tableData?.data && tableData.data.length > 0) {
       const columnNames = Object.keys(tableData.data[0] ?? {})
@@ -763,6 +866,10 @@ const SpreadsheetView = () => {
             }
           } else if (rowNumber > effectiveHeaderRow) {
             const zeroBasedRow = rowNumber - effectiveHeaderRow - 1;
+            if (zeroBasedRow >= 0 && !seenRows.has(zeroBasedRow)) {
+              rowMappings.push(zeroBasedRow);
+              seenRows.add(zeroBasedRow);
+            }
             if (zeroBasedRow >= 0 && cellValue !== null && cellValue !== undefined && cellValue !== '') {
               cells[`${zeroBasedRow}-${colIndex}`] = cellValue;
             }
@@ -776,9 +883,9 @@ const SpreadsheetView = () => {
     }
 
     // Extract the actual row numbers from data for display (handles filters and deleted rows)
-    const actualRowNumbers = Array.from(new Set(Object.keys(cells).map(key => parseInt(key.split('-')[0])))).sort((a, b) => a - b);
-    const hasGaps = actualRowNumbers.length > 0 && actualRowNumbers.some((num, idx) => idx > 0 && num !== actualRowNumbers[idx - 1] + 1);
-    const displayRowNumbers = (hasActiveFilters || hasGaps) ? actualRowNumbers : undefined;
+    const sortedRowMappings = rowMappings.slice().sort((a, b) => a - b);
+    const hasGaps = sortedRowMappings.length > 0 && sortedRowMappings.some((num, idx) => idx > 0 && num !== sortedRowMappings[idx - 1] + 1);
+    const displayRowNumbers = (hasActiveFilters || hasGaps) ? sortedRowMappings : undefined;
 
     return { cells, columnHeaders, hasActiveFilters, displayRowNumbers };
   };
@@ -842,19 +949,31 @@ const SpreadsheetView = () => {
     const highlightCalls = toolCalls.filter(call => call?.kind === 'highlight' && call.status === 'ok');
     if (hasClear || highlightCalls.length > 0) {
       const newHighlights = highlightCalls
-        .filter(call => call.sheetId && (call.range || (call.condition && call.rowNumbers)))
-        .map(call => ({
-          sheetId: call.sheetId!,
-          range: call.range,
-          condition: call.condition,
-          // Convert 1-based row_numbers from backend to 0-based row indices for frontend
-          rowNumbers: call.rowNumbers?.map(n => n - 1),
-          color: call.color || 'yellow',
-          message: call.message || null,
-        }));
+        .filter(call => call.sheetId && (call.range || call.condition || call.rowNumbers))
+        .map(call => {
+          const normalizedRange = call.range?.trim();
+          const normalizedRowNumbers = sanitizeRowNumbers(
+            call.rowNumbers && call.rowNumbers.length > 0
+              ? call.rowNumbers.map((n) => n - 1)
+              : parseRowRangeToZeroBased(normalizedRange)
+          );
 
-      // If clear was called, replace all highlights; otherwise append
-      setActiveHighlights(hasClear ? newHighlights : prev => [...prev, ...newHighlights]);
+          return {
+            sheetId: call.sheetId!,
+            range: normalizedRange ? normalizedRange.toUpperCase() : undefined,
+            condition: call.condition ? call.condition.trim() : undefined,
+            rowNumbers: normalizedRowNumbers,
+            color: (call.color || 'yellow').toLowerCase(),
+            message: call.message || null,
+          } satisfies CellHighlight;
+        })
+        .filter(highlight => highlight.range || highlight.condition || highlight.rowNumbers);
+
+      if (hasClear) {
+        setActiveHighlights(newHighlights.length > 0 ? mergeHighlights([], newHighlights) : []);
+      } else if (newHighlights.length > 0) {
+        setActiveHighlights(prev => mergeHighlights(prev, newHighlights));
+      }
 
       // Scroll to first new highlight for the active sheet
       if (newHighlights.length > 0 && activeSheet) {
@@ -942,13 +1061,25 @@ const SpreadsheetView = () => {
     let targetRow: number | undefined;
     let targetCol: number | undefined;
 
+    const lettersToIndex = (letters: string) => {
+      let colIndex = 0;
+      for (let i = 0; i < letters.length; i++) {
+        colIndex = colIndex * 26 + (letters.charCodeAt(i) - 64);
+      }
+      return colIndex - 1;
+    };
+
     // Determine target cell from highlight
     if (highlight.range) {
       // Parse range like "A1:B5" to get first cell
       const match = highlight.range.match(/^([A-Z]+)(\d+)/);
       if (match) {
-        targetCol = match[1].charCodeAt(0) - 65; // Convert A->0, B->1, etc
-        targetRow = parseInt(match[2]) - 1; // Convert 1-based to 0-based
+        const colIndex = lettersToIndex(match[1]);
+        const rowIndex = parseInt(match[2], 10) - 1;
+        if (colIndex >= 0 && Number.isFinite(rowIndex) && rowIndex >= 0) {
+          targetCol = colIndex;
+          targetRow = rowIndex;
+        }
       }
     } else if (highlight.rowNumbers && highlight.rowNumbers.length > 0) {
       // Use first row number
@@ -957,18 +1088,21 @@ const SpreadsheetView = () => {
     }
 
     if (targetRow !== undefined && targetCol !== undefined) {
+      const visualRow = toVisualRowIndex(targetRow);
+      const visualCol = Math.max(0, targetCol);
+
       // Estimate row height and column width
-      const rowHeight = getRowHeight(targetRow);
+      const rowHeight = getRowHeight(visualRow);
       const headerHeight = 40; // Approximate header height
-      const scrollTop = targetRow * rowHeight;
+      const scrollTop = visualRow * rowHeight;
 
       // Scroll to the target row
       gridContainerRef.current.scrollTop = Math.max(0, scrollTop - headerHeight);
 
       // Update selection to highlight the cell
       setSelection({
-        start: { row: targetRow, col: targetCol },
-        end: { row: targetRow, col: targetCol },
+        start: { row: visualRow, col: visualCol },
+        end: { row: visualRow, col: visualCol },
         type: 'cell'
       });
     }
@@ -1282,12 +1416,9 @@ const SpreadsheetView = () => {
             <div className="border-b border-border/50 bg-background px-6 py-3 flex items-center justify-between">
               <CoordinateDisplay
                 selection={selection}
-                cellContent={
-                  activeSheet && selection.start.row === selection.end.row && selection.start.col === selection.end.col
-                    ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
-                    : undefined
-                }
+                cellContent={focusedCellContent}
                 selectedCells={getSelectedCellsContent()}
+                rowNumberResolver={resolveRowIndex}
               />
               <div className="text-sm text-muted-foreground">
                 {dataRowCount.toLocaleString()} rows

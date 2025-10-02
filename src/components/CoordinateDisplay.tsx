@@ -9,6 +9,7 @@ interface CoordinateDisplayProps {
   selection: CellSelection;
   cellContent?: string;
   selectedCells?: { [key: string]: string };
+  rowNumberResolver?: (rowIndex: number) => number;
 }
 
 const getColumnLabel = (colIndex: number): string => {
@@ -24,12 +25,21 @@ const getColumnLabel = (colIndex: number): string => {
   return label;
 };
 
-const formatCellReference = (row: number, col: number): string => {
-  return `${getColumnLabel(col)}${row + 1}`;
+const formatCellReference = (
+  row: number,
+  col: number,
+  resolveRow?: (rowIndex: number) => number
+): string => {
+  const actualRow = resolveRow ? resolveRow(row) : row;
+  return `${getColumnLabel(col)}${actualRow + 1}`;
 };
 
-const formatSelectionReference = (selection: CellSelection): string => {
+const formatSelectionReference = (
+  selection: CellSelection,
+  resolveRow?: (rowIndex: number) => number
+): string => {
   const { start, end, type } = selection;
+  const resolve = (rowIndex: number) => (resolveRow ? resolveRow(rowIndex) : rowIndex);
   
   if (type === 'all') {
     return 'ALL';
@@ -37,11 +47,14 @@ const formatSelectionReference = (selection: CellSelection): string => {
   
   if (type === 'row') {
     if (start.row === end.row) {
-      return `${start.row + 1}:${start.row + 1}`;
+      const actual = resolve(start.row);
+      return `${actual + 1}:${actual + 1}`;
     }
     const minRow = Math.min(start.row, end.row);
     const maxRow = Math.max(start.row, end.row);
-    return `${minRow + 1}:${maxRow + 1}`;
+    const actualMin = resolve(minRow);
+    const actualMax = resolve(maxRow);
+    return `${actualMin + 1}:${actualMax + 1}`;
   }
   
   if (type === 'column') {
@@ -55,14 +68,14 @@ const formatSelectionReference = (selection: CellSelection): string => {
   
   // Regular cell selection
   if (start.row === end.row && start.col === end.col) {
-    return formatCellReference(start.row, start.col);
+    return formatCellReference(start.row, start.col, resolveRow);
   }
   
-  return `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
+  return `${formatCellReference(start.row, start.col, resolveRow)}:${formatCellReference(end.row, end.col, resolveRow)}`;
 };
 
-export const CoordinateDisplay = ({ selection, cellContent, selectedCells }: CoordinateDisplayProps) => {
-  const displayText = formatSelectionReference(selection);
+export const CoordinateDisplay = ({ selection, cellContent, selectedCells, rowNumberResolver }: CoordinateDisplayProps) => {
+  const displayText = formatSelectionReference(selection, rowNumberResolver);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isQuickLookOpen, setIsQuickLookOpen] = useState(false);
   const spaceDownTimeRef = useRef(0);
