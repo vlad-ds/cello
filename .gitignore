@@ -7,10 +7,18 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Environment variables
+.env
+.env.*
+!.env.example
+
 node_modules
 dist
 dist-ssr
 *.local
+.cache
+.vite
+.turbo
 
 # Local SQLite data
 data/
