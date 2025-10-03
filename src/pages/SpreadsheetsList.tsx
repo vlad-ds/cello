@@ -58,21 +58,15 @@ const SpreadsheetsList = () => {
     }
   };
 
-  const handleFileImport = async (data: { sheetName: string; headers: string[]; rows: string[][] }) => {
+  const handleFileImport = async (sheets: { sheetName: string; headers: string[]; rows: string[][] }[]) => {
     try {
-      // Create new spreadsheet with the sheet name
-      const spreadsheet = await dataClient.createSpreadsheet(data.sheetName);
+      // Create new spreadsheet with the first sheet's name
+      const spreadsheet = await dataClient.createSpreadsheet(sheets[0].sheetName);
 
-      // Create sheet with the same name
-      const sheet = await dataClient.createSheet(spreadsheet.id, data.sheetName);
-
-      // Import the data using the backend's sheet sync
-      // For now, we'll navigate to the spreadsheet and let SpreadsheetView handle the import
-      // Store the import data temporarily and navigate
+      // Store all sheets for import after navigation
       sessionStorage.setItem('pendingImport', JSON.stringify({
         spreadsheetId: spreadsheet.id,
-        sheetId: sheet.id,
-        data
+        sheets
       }));
 
       navigate(`/spreadsheet/${spreadsheet.id}`);
@@ -124,7 +118,7 @@ const SpreadsheetsList = () => {
             <span className="inline-block ml-3">🎻</span>
           </h1>
           <p className="text-2xl md:text-3xl text-center font-light text-foreground/80 mb-12 max-w-2xl mx-auto leading-relaxed">
-            Spreadsheets should <span className="italic font-medium">spark joy</span> ✨
+            Spreadsheets that <span className="italic font-medium">spark joy</span>
           </p>
 
           {/* Search/action bar */}

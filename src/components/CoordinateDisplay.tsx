@@ -10,6 +10,7 @@ interface CoordinateDisplayProps {
   selection: CellSelection;
   cellContent?: string;
   selectionSnapshot?: SelectionSnapshot | null;
+  columnHeader?: string;
 }
 
 const getColumnLabel = (colIndex: number): string => {
@@ -62,7 +63,7 @@ const formatSelectionReference = (selection: CellSelection): string => {
   return `${formatCellReference(start.row, start.col)}:${formatCellReference(end.row, end.col)}`;
 };
 
-export const CoordinateDisplay = ({ selection, cellContent, selectionSnapshot }: CoordinateDisplayProps) => {
+export const CoordinateDisplay = ({ selection, cellContent, selectionSnapshot, columnHeader }: CoordinateDisplayProps) => {
   const displayText = formatSelectionReference(selection);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isQuickLookOpen, setIsQuickLookOpen] = useState(false);
@@ -271,7 +272,10 @@ export const CoordinateDisplay = ({ selection, cellContent, selectionSnapshot }:
                 </DialogTrigger>
                 <DialogContent className="max-w-2xl">
                   <DialogHeader>
-                    <DialogTitle>Cell Content - {displayText}</DialogTitle>
+                    <DialogTitle>
+                      {columnHeader && <div className="text-sm font-normal text-muted-foreground mb-1">{columnHeader}</div>}
+                      Cell Content - {displayText}
+                    </DialogTitle>
                   </DialogHeader>
                   <div className="mt-4 max-h-96 overflow-y-auto">
                     <div className="text-sm bg-muted/50 rounded-lg p-4 font-mono whitespace-pre-wrap break-words">
@@ -290,6 +294,7 @@ export const CoordinateDisplay = ({ selection, cellContent, selectionSnapshot }:
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-none">
           <div className="bg-card border border-border rounded-2xl shadow-2xl max-w-2xl w-full mx-4 pointer-events-auto">
             <div className="px-6 py-4 border-b border-border">
+              {columnHeader && <div className="text-sm text-muted-foreground mb-1">{columnHeader}</div>}
               <h3 className="font-medium text-foreground">Cell Content - {displayText}</h3>
             </div>
             <div className="px-6 py-4 max-h-96 overflow-y-auto">

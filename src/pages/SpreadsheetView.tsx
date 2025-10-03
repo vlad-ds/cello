@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Undo, ArrowLeft } from "lucide-react";
+import { Undo, ArrowLeft, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SpreadsheetGrid } from "@/components/SpreadsheetGrid";
 import { SheetTabs } from "@/components/SheetTabs";
@@ -129,11 +129,42 @@ const SpreadsheetView = () => {
 
       try {
         const pendingImport = JSON.parse(pendingImportStr);
-        if (pendingImport.spreadsheetId === spreadsheetId && pendingImport.sheetId && pendingImport.data) {
-          // Clear the pending import
-          sessionStorage.removeItem('pendingImport');
+        if (pendingImport.spreadsheetId !== spreadsheetId) return;
 
-          // Import the data
+        // Clear the pending import
+        sessionStorage.removeItem('pendingImport');
+
+        // Handle multiple sheets format (new)
+        if (pendingImport.sheets && Array.isArray(pendingImport.sheets)) {
+          let firstSheetId: string | null = null;
+
+          for (const data of pendingImport.sheets) {
+            // Create sheet
+            const newSheet = await dataClient.createSheet(spreadsheetId!, data.sheetName);
+
+            if (!firstSheetId) {
+              firstSheetId = newSheet.id;
+            }
+
+            // Create table with correct number of columns
+            await createDynamicTable(newSheet.id, data.headers.length);
+
+            // Use bulk import for efficiency
+            await dataClient.importBulkData(newSheet.id, data.headers, data.rows);
+          }
+
+          // Reload to show the imported sheets
+          await loadSpreadsheet();
+
+          const totalRows = pendingImport.sheets.reduce((sum: number, sheet: any) => sum + sheet.rows.length, 0);
+          toast(`Imported ${pendingImport.sheets.length} sheet(s) with ${totalRows} total rows`);
+
+          if (firstSheetId) {
+            setActiveSheetId(firstSheetId);
+          }
+        }
+        // Handle single sheet format (old, for backward compatibility)
+        else if (pendingImport.sheetId && pendingImport.data) {
           const { data, sheetId } = pendingImport;
 
           // Use bulk import for efficiency (will create columns from headers)
@@ -578,30 +609,112 @@ const SpreadsheetView = () => {
     }
   };
 
-  const handleFileImport = async (data: { sheetName: string; headers: string[]; rows: string[][] }) => {
+  const handleFileImport = async (sheets: { sheetName: string; headers: string[]; rows: string[][] }[]) => {
     if (!spreadsheetId) return;
 
     try {
-      // Create new sheet with imported name
-      const newSheet = await dataClient.createSheet(spreadsheetId, data.sheetName);
+      let firstSheetId: string | null = null;
 
-      // Create table with correct number of columns
-      await createDynamicTable(newSheet.id, data.headers.length);
+      for (const data of sheets) {
+        // Create new sheet with imported name
+        const newSheet = await dataClient.createSheet(spreadsheetId, data.sheetName);
 
-      // Use bulk import for efficiency
-      await dataClient.importBulkData(newSheet.id, data.headers, data.rows);
+        // Track the first sheet to switch to it
+        if (!firstSheetId) {
+          firstSheetId = newSheet.id;
+        }
 
-      // Reload spreadsheet to show the new sheet
+        // Create table with correct number of columns
+        await createDynamicTable(newSheet.id, data.headers.length);
+
+        // Use bulk import for efficiency
+        await dataClient.importBulkData(newSheet.id, data.headers, data.rows);
+      }
+
+      // Reload spreadsheet to show all new sheets
       await loadSpreadsheet();
 
-      // Switch to the newly imported sheet
-      setActiveSheetId(newSheet.id);
-
-      toast(`Imported ${data.rows.length} rows successfully`);
+      // Switch to the first imported sheet
+      if (firstSheetId) {
+        setActiveSheetId(firstSheetId);
+      }
     } catch (error) {
       console.error('Error importing file:', error);
       toast("Failed to import file data.");
     }
+  };
+
+  const handleExportCSV = () => {
+    if (!activeSheet) return;
+
+    // Find columns that have data (any non-empty cell in any row)
+    const usedColumns: number[] = [];
+    for (let col = 0; col < activeSheet.columnHeaders.length; col++) {
+      let hasData = false;
+      for (let row = 0; row < activeSheet.rowOrder.length; row++) {
+        const cellKey = `${row}-${col}`;
+        if (activeSheet.cells[cellKey]?.trim()) {
+          hasData = true;
+          break;
+        }
+      }
+      if (hasData) {
+        usedColumns.push(col);
+      }
+    }
+
+    // If no columns have data, export nothing
+    if (usedColumns.length === 0) {
+      toast("No data to export");
+      return;
+    }
+
+    // Create CSV content with only used columns
+    const headers = usedColumns.map(col => activeSheet.columnHeaders[col]).join(',');
+    const rows: string[] = [];
+
+    // Get rows with data
+    for (let row = 0; row < activeSheet.rowOrder.length; row++) {
+      // Check if row has any data
+      let hasData = false;
+      for (const col of usedColumns) {
+        const cellKey = `${row}-${col}`;
+        if (activeSheet.cells[cellKey]?.trim()) {
+          hasData = true;
+          break;
+        }
+      }
+
+      // Only export rows with data
+      if (hasData) {
+        const rowData: string[] = [];
+        for (const col of usedColumns) {
+          const cellKey = `${row}-${col}`;
+          const value = activeSheet.cells[cellKey] || '';
+          // Escape quotes and wrap in quotes if contains comma, quote, or newline
+          const escaped = value.includes(',') || value.includes('"') || value.includes('\n')
+            ? `"${value.replace(/"/g, '""')}"`
+            : value;
+          rowData.push(escaped);
+        }
+        rows.push(rowData.join(','));
+      }
+    }
+
+    const csvContent = [headers, ...rows].join('\n');
+
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${activeSheet.name}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    toast(`Exported ${rows.length} rows to ${activeSheet.name}.csv`);
   };
 
   const renameSheet = async (sheetId: string, newName: string) => {
@@ -1185,6 +1298,55 @@ const SpreadsheetView = () => {
       message += `\n\nAdditional instructions: ${additionalInstructions}`;
     }
 
+    // Include SQL identifier guidance for the relevant columns so the assistant targets valid fields
+    const parseCellRef = (cellRef: string) => {
+      const match = cellRef.trim().toUpperCase().match(/^([A-Z]+)(\d+)$/);
+      if (!match) return null;
+      return {
+        col: letterToCol(match[1]),
+        row: parseInt(match[2], 10) - 1,
+      };
+    };
+
+    const collectColumnsFromRange = (range: string, bucket: Set<number>) => {
+      if (!range) return;
+      const [start, end] = range.split(':');
+      const startRef = parseCellRef(start);
+      const endRef = end ? parseCellRef(end) : startRef;
+      if (!startRef || !endRef) return;
+      const minCol = Math.min(startRef.col, endRef.col);
+      const maxCol = Math.max(startRef.col, endRef.col);
+      for (let col = minCol; col <= maxCol; col++) {
+        bucket.add(col);
+      }
+    };
+
+    if (activeSheet?.columnMeta && activeSheet.columnMeta.length > 0) {
+      const columnIndices = new Set<number>();
+      collectColumnsFromRange(sourceRange, columnIndices);
+      collectColumnsFromRange(targetRange, columnIndices);
+
+      const columnGuidance = Array.from(columnIndices)
+        .sort((a, b) => a - b)
+        .map((colIndex) => {
+          const meta = activeSheet.columnMeta?.[colIndex];
+          if (!meta || !meta.sql_name) {
+            return null;
+          }
+
+          const columnLabel = `Column ${colToLetter(colIndex)}`;
+          const headerLabel = meta.header && meta.header.trim().length > 0
+            ? `header "${meta.header.trim()}"`
+            : 'no header';
+          return `• ${columnLabel} (${headerLabel}) → SQL identifier "${meta.sql_name}"`;
+        })
+        .filter((line): line is string => Boolean(line));
+
+      if (columnGuidance.length > 0) {
+        message += `\n\nColumn SQL identifiers for this range:\n${columnGuidance.join('\n')}\nUse these SQL identifiers exactly when writing SQL.`;
+      }
+    }
+
     // Set the message to be sent to the chat panel
     setFillRequestMessage(message);
 
@@ -1326,6 +1488,15 @@ const SpreadsheetView = () => {
           <KeyboardShortcuts />
           <FileImport onImport={handleFileImport} />
           <Button
+            onClick={handleExportCSV}
+            variant="outline"
+            size="sm"
+            className="rounded-lg"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Export
+          </Button>
+          <Button
             onClick={undo}
             variant="outline"
             size="sm"
@@ -1354,6 +1525,11 @@ const SpreadsheetView = () => {
                 cellContent={
                   activeSheet && selection.start.row === selection.end.row && selection.start.col === selection.end.col
                     ? activeSheet.cells[`${selection.start.row}-${selection.start.col}`]
+                    : undefined
+                }
+                columnHeader={
+                  activeSheet && selection.start.row === selection.end.row && selection.start.col === selection.end.col
+                    ? activeSheet.columnHeaders[selection.start.col]
                     : undefined
                 }
                 selectionSnapshot={getSelectionSnapshot()}

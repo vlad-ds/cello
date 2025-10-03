@@ -1225,6 +1225,7 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
 
   touchSheet(sheetId);
   normalizeSheetRows(sheetId);
+  const addedColumns = syncSheetColumnsWithTable(sheetId);
 
   return {
     sheet,
@@ -1232,6 +1233,7 @@ const executeSheetSqlMutation = (spreadsheetId, sheetId, rawSql) => {
     operation,
     changes,
     lastInsertRowid,
+    addedColumns,
   };
 };
 
@@ -1248,6 +1250,96 @@ const ensureUniqueSqlName = (sheetId, desiredName, columnIndexToIgnore) => {
     suffix += 1;
     candidate = `${desiredName}_${suffix}`;
   }
+};
+
+const toTitleCase = (value) => {
+  if (!value || typeof value !== 'string') {
+    return '';
+  }
+
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+};
+
+const deriveHeaderFromSqlName = (sqlName, fallback) => {
+  if (!sqlName || typeof sqlName !== 'string') {
+    return fallback;
+  }
+
+  const normalized = sqlName
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) {
+    return fallback;
+  }
+
+  return toTitleCase(normalized);
+};
+
+const syncSheetColumnsWithTable = (sheetId) => {
+  const tableName = ensureSheetTable(sheetId);
+  const pragmaColumns = db
+    .prepare(`PRAGMA table_info("${tableName}")`)
+    .all()
+    .filter((column) => !SHEET_METADATA_COLUMNS.has(column.name));
+
+  const existingMeta = db
+    .prepare('SELECT column_index, header, sql_name, column_id FROM sheet_columns WHERE sheet_id = ? ORDER BY column_index ASC')
+    .all(sheetId);
+  const existingBySql = new Map(existingMeta.map((column) => [column.sql_name, column]));
+
+  db.prepare('DELETE FROM sheet_columns WHERE sheet_id = ?').run(sheetId);
+
+  const addedColumns = [];
+  const seenSqlNames = [];
+
+  pragmaColumns.forEach((column, index) => {
+    let sqlName = column.name;
+    const existing = existingBySql.get(sqlName);
+
+    let header = existing?.header ?? deriveHeaderFromSqlName(sqlName, defaultHeader(index));
+    let columnId = existing?.column_id ?? randomUUID();
+
+    if (!existing) {
+      const desiredSql = sanitizeSqlIdentifier(header, defaultSqlName(index));
+      const uniqueSql = ensureUniqueSqlName(sheetId, desiredSql, index);
+      if (uniqueSql !== sqlName) {
+        db.prepare(`ALTER TABLE "${tableName}" RENAME COLUMN "${sqlName}" TO "${uniqueSql}"`).run();
+        sqlName = uniqueSql;
+        header = deriveHeaderFromSqlName(sqlName, header);
+      }
+
+      addedColumns.push({
+        header,
+        sqlName,
+        columnIndex: index,
+      });
+      columnId = randomUUID();
+    }
+
+    db.prepare(
+      `INSERT INTO sheet_columns (sheet_id, column_index, header, sql_name, column_id)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(sheetId, index, header, sqlName, columnId);
+
+    seenSqlNames.push(sqlName);
+  });
+
+  if (seenSqlNames.length > 0) {
+    const placeholders = seenSqlNames.map(() => '?').join(', ');
+    db
+      .prepare(`DELETE FROM sheet_columns WHERE sheet_id = ? AND sql_name NOT IN (${placeholders})`)
+      .run(sheetId, ...seenSqlNames);
+  } else {
+    db.prepare('DELETE FROM sheet_columns WHERE sheet_id = ?').run(sheetId);
+  }
+
+  return addedColumns;
 };
 
 const ensureColumnCount = (sheetId, targetCount) => {
@@ -1950,6 +2042,7 @@ const handleAnthropicChat = async (req, res, context, streamer = null) => {
     'You are an assistant helping users work with spreadsheet data.',
     'You have access to eight tools: executeSheetSql (for reading data), mutateSheetSql (for changing data), deleteRows (for removing rows), highlights_add (for visual emphasis), highlights_clear (to remove highlights), filter_add (to hide rows), filter_clear (to remove filters), and createSheet (to create new sheets).',
     '**COMMUNICATION STYLE**: Be concise. The results of your work appear directly in the spreadsheet, so don\'t repeat or describe what you\'ve done at length. Simply confirm completion with a brief status (e.g., "Done" or "Filled all gaps"). If results are NOT visible in the spreadsheet (e.g., when answering questions or explaining errors), provide necessary explanation but remain succinct. Never rewrite or enumerate your work in chat messages.',
+    '**CRITICAL: FILL OPERATIONS NEVER CREATE COLUMNS**: When users perform Fill operations (extending data to new cells), the target columns ALREADY EXIST in the sheet - they are just empty. Fill can only extend into existing cells. Your job is to UPDATE/INSERT data into those existing columns, never ALTER TABLE ADD COLUMN. Before any data modification, run SELECT * FROM [sheet] LIMIT 1 to see the current structure and confirm which columns exist.',
     '**DATA SIZE STRATEGY**: When working with user data, be mindful of context window usage: (1) For SMALL datasets (~20 cells or fewer): Look at the selected cell context directly and answer questions without SQL queries. (2) For LARGE datasets (>20 cells): Use executeSheetSql to query, aggregate, and analyze. Never load full large datasets into your context - use SQL for filtering, aggregation, and analysis.',
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM reviews.',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
@@ -2976,6 +3069,7 @@ app.post('/spreadsheets/:id/chat', async (req, res) => {
     'You are an assistant helping users work with spreadsheet data.',
     'You have access to four functions: executeSheetSql (for reading data), mutateSheetSql (for changing data), highlights_add (for visual emphasis), and highlights_clear (to remove highlights).',
     '**COMMUNICATION STYLE**: Be concise. The results of your work appear directly in the spreadsheet, so don\'t repeat or describe what you\'ve done at length. Simply confirm completion with a brief status (e.g., "Done" or "Filled all gaps"). If results are NOT visible in the spreadsheet (e.g., when answering questions or explaining errors), provide necessary explanation but remain succinct. Never rewrite or enumerate your work in chat messages.',
+    '**CRITICAL: FILL OPERATIONS NEVER CREATE COLUMNS**: When users perform Fill operations (extending data to new cells), the target columns ALREADY EXIST in the sheet - they are just empty. Fill can only extend into existing cells. Your job is to UPDATE/INSERT data into those existing columns, never ALTER TABLE ADD COLUMN. Before any data modification, run SELECT * FROM [sheet] LIMIT 1 to see the current structure and confirm which columns exist.',
     '**DATA SIZE STRATEGY**: When working with user data, be mindful of context window usage: (1) For SMALL datasets (~20 cells or fewer): Look at the selected cell context directly and answer questions without SQL queries. (2) For LARGE datasets (>20 cells): Use executeSheetSql to query, aggregate, and analyze. Never load full large datasets into your context - use SQL for filtering, aggregation, and analysis.',
     '**AI OPERATIONS STRATEGY**: For tasks requiring AI analysis (classification, summarization, sentiment analysis, etc.): (1) SMALL data (≤20 cells): Process directly in your response by looking at the cell values. (2) LARGE data (>20 cells): Use the AI() SQL function to process data efficiently within queries. The AI() function calls Gemini Flash 2.0. Example: SELECT AI(\'Classify sentiment: \' || "review", \'["positive","negative","neutral"]\') FROM context.spreadsheet.sheets["Reviews"].',
     'Use `executeSheetSql` to query spreadsheet data. Use the sheet ref (like context.spreadsheet.sheets["term1"]) directly in your SQL queries as the table name. The system automatically substitutes the correct table. Example: SELECT "grade" FROM context.spreadsheet.sheets["term1"] WHERE "name" = \'Julia\'. Never construct table names manually.',
