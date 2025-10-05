@@ -255,7 +255,7 @@ SELECT * FROM sheet_<sheet_id>;
 
 ## Known Limitations
 
-- No undo/redo functionality
+- Limited undo functionality (cell edits and column header changes only)
 - No collaborative editing
 - No cell formatting (colors, fonts, etc.)
 - No formulas (use SQL queries with the AI assistant instead)
