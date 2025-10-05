@@ -372,30 +372,6 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
             onAssistantToolCalls?.(lastAssistant.tool_calls ?? null);
           }
         }
-      } else {
-        const { data, error } = await supabase.functions.invoke('gemini-chat', {
-          body: {
-            query: trimmed,
-            selection: selection ?? null,
-          },
-        });
-
-        if (error) {
-          throw error;
-        }
-
-        const assistantMessage: Message = {
-          id: `${Date.now() + 1}`,
-          role: 'assistant',
-          content: data.response || "Oops! 😅 I had trouble processing that. Mind trying again?",
-          timestamp: new Date(),
-          contextRange: rangeValue,
-          toolCalls: null,
-          isStreaming: false,
-        };
-
-        setMessages((prev) => [...prev, assistantMessage]);
-        onAssistantToolCalls?.(null);
       }
     } catch (error) {
       console.error('Error processing conversation:', error);
@@ -863,7 +839,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
           ) : (
             <Button
               onClick={handleSendMessage}
-              disabled={!input.trim() || isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
+              disabled={!input.trim() || isTyping || isClearing || !spreadsheetId || isLoadingHistory}
               size="icon"
               className="transition-transform hover:scale-105 active:scale-95"
             >
