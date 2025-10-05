@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-A spreadsheet application with AI assistance built with React + TypeScript + Vite (frontend) and Express + SQLite (backend). The app supports dual backends: a local SQLite API (default) or optional Supabase (legacy).
+A spreadsheet application with AI assistance built with React + TypeScript + Vite (frontend) and Express + SQLite (backend).
 
 ## Development Setup
 
@@ -37,7 +37,6 @@ npm run lint          # Run ESLint
 
 The backend is controlled by environment variables (`.env` file):
 
-- `VITE_USE_SUPABASE` – Set to `true` to use Supabase instead of local SQLite. Default is false.
 - `VITE_SQLITE_API_URL` – Local API origin (defaults to `http://localhost:4000`)
 - `AI_PROVIDER` – AI model for chat assistant: `anthropic` (default) or `gemini`
 - `ANTHROPIC_API_KEY` – Required for AI chat assistant when using Claude Sonnet 4.5 (default chat provider)
@@ -46,7 +45,7 @@ The backend is controlled by environment variables (`.env` file):
 - `AI_FUNCTION_MODEL` – Optional model override (defaults: `gpt-4o-mini` for OpenAI, `gemini-2.0-flash-exp` for Gemini)
 - `OPENAI_API_KEY` – Required for AI() SQL function when using OpenAI (default)
 
-**Important:** When using the local SQLite backend (default), the API must be running for the app to work. Without it, spreadsheet operations will fail.
+**Important:** The API must be running for the app to work. Without it, spreadsheet operations will fail.
 
 ## Architecture
 
@@ -82,9 +81,8 @@ Single-file Express server using better-sqlite3. Data stored in `data/app.db` (g
 - `/demo` – Static demo page (`Index`)
 
 **Data Access:**
-- `src/integrations/database/` – Abstraction layer that switches between SQLite and Supabase based on `VITE_USE_SUPABASE`
+- `src/integrations/database/` – Data client abstraction
 - `sqliteClient.ts` – Calls local API via fetch
-- `supabaseClient.ts` – Calls Supabase directly (legacy support)
 - `useSpreadsheetSync` hook – Manages cell editing and table creation
 
 **Key Components:**
@@ -152,12 +150,6 @@ The `AI()` function enables AI-powered data processing directly in SQL queries:
 - Column operations alter actual SQL schema, not just metadata
 - Empty rows are automatically deleted when all cells are cleared
 
-### Backend vs. Supabase Mode
-When `VITE_USE_SUPABASE=true`:
-- Column removal, chat history, and local-only routes throw helpful errors
-- AI chat uses Supabase edge function `supabase/functions/gemini-chat`
-- Most new features (SQL tools, conversation persistence) won't work
-
 ### Markdown Rendering
 `ChatPanel` uses `marked` + `DOMPurify` for assistant responses. Import both only once to avoid duplicate declarations.
 
@@ -169,9 +161,8 @@ When `VITE_USE_SUPABASE=true`:
 ### Adding a New API Route
 1. Add route handler in `server/index.mjs`
 2. Update `src/integrations/database/sqliteClient.ts` to call it
-3. Add stub implementation in `src/integrations/database/supabaseClient.ts` (if applicable)
-4. Update types in `src/integrations/database/types.ts`
-5. Restart `npm run server:watch`
+3. Update types in `src/integrations/database/types.ts`
+4. Restart `npm run server:watch`
 
 ### Schema Changes
 - Add migration logic in `server/index.mjs` after table creation
@@ -204,7 +195,7 @@ server/
   index.mjs              # Express API + SQLite operations
 src/
   integrations/
-    database/            # Data client abstraction (SQLite vs Supabase)
+    database/            # Data client abstraction
   pages/
     SpreadsheetView.tsx  # Main editor
     SpreadsheetsList.tsx # Home page
@@ -270,4 +261,3 @@ src/
 - Bundle size warnings (>500 kB) can be ignored for now
 - No test suite present; validate changes manually via UI + network inspection
 - `nodemon` watches `server/`, `.env`, and `.mjs`/`.js`/`.json` files for autoreload
-- Component tagger (`lovable-tagger`) runs in development mode only

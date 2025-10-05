@@ -5,11 +5,8 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { FollowEyesCharacter } from "@/components/FollowEyesCharacter";
-import { supabase } from "@/integrations/supabase/client";
-import { backendConfig } from "@/config/backend";
 import {
   dataClient,
-  isSupabaseBackend,
   type CellHighlight,
   type FilterCondition,
   type ChatMessage,
@@ -97,11 +94,6 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
   const abortStreamRef = useRef(false);
 
   useEffect(() => {
-    if (isSupabaseBackend) {
-      setMessages([welcomeMessage]);
-      return;
-    }
-
     if (!spreadsheetId) {
       setMessages([welcomeMessage]);
       return;
@@ -134,7 +126,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
     return () => {
       isMounted = false;
     };
-  }, [spreadsheetId, isSupabaseBackend]);
+  }, [spreadsheetId]);
 
   const scrollToBottom = () => {
     if (scrollAreaRef.current) {
@@ -179,12 +171,12 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
     setIsTyping(true);
     abortStreamRef.current = false;
 
-    const streamChat = (!isSupabaseBackend && typeof dataClient.sendChatMessageStream === 'function')
+    const streamChat = (typeof dataClient.sendChatMessageStream === 'function')
       ? dataClient.sendChatMessageStream.bind(dataClient)
       : undefined;
 
     try {
-      if (!isSupabaseBackend && streamChat) {
+      if (streamChat) {
         if (!spreadsheetId) {
           const warningMessage: Message = {
             id: `${Date.now() + 1}`,
@@ -347,7 +339,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
             }
           }
         }
-      } else if (!isSupabaseBackend) {
+      } else {
         if (!spreadsheetId) {
           const warningMessage: Message = {
             id: `${Date.now() + 1}`,
@@ -441,11 +433,6 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
   };
 
   const handleClearConversation = async () => {
-    if (isSupabaseBackend) {
-      toast('Clearing conversations is only available when using the local SQLite backend.');
-      return;
-    }
-
     if (!spreadsheetId) {
       toast('Open a spreadsheet to clear its conversation.');
       return;
@@ -499,7 +486,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
             variant="ghost"
             size="sm"
             onClick={handleClearConversation}
-            disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
+            disabled={isTyping || isClearing || !spreadsheetId || isLoadingHistory}
           >
             Clear Chat
           </Button>
@@ -861,7 +848,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
             onKeyDown={handleKeyDown}
             placeholder="Ask Cello anything... ✨"
             className="flex-1"
-            disabled={isTyping || isClearing || (!spreadsheetId && !isSupabaseBackend) || isLoadingHistory}
+            disabled={isTyping || isClearing || !spreadsheetId || isLoadingHistory}
           />
           {isStreaming ? (
             <Button
@@ -887,7 +874,7 @@ export const ChatPanel = ({ onCommand, onAssistantToolCalls, selection, spreadsh
         <p className="text-xs text-muted-foreground mt-2">
           💡 Try: "Sum column A", "Find the highest value", "Highlight duplicates"
         </p>
-        {!spreadsheetId && !isSupabaseBackend && (
+        {!spreadsheetId && (
           <p className="text-xs text-muted-foreground mt-2">
             Open a spreadsheet to store your chat history.
           </p>

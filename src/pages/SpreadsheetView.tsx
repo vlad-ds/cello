@@ -12,7 +12,6 @@ import { FillConfirmationDialog } from "@/components/FillConfirmationDialog";
 import { AIPromptDialog } from "@/components/AIPromptDialog";
 import {
   dataClient,
-  isSupabaseBackend,
   type SpreadsheetRecord,
   type ToolCall,
   type SheetTableData,
@@ -490,11 +489,6 @@ const SpreadsheetView = () => {
 
     if (activeSheet.columnHeaders.length <= 1) {
       toast("You need at least one column in a sheet.");
-      return;
-    }
-
-    if (isSupabaseBackend) {
-      toast('Removing columns is only supported while using the local SQLite backend.');
       return;
     }
 

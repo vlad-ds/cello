@@ -1,89 +1,271 @@
-# Welcome to your Lovable project
+# Cello
 
-## Project info
+> **⚠️ Alpha Software**: Cello is currently in early development. Expect bugs, incomplete features, and breaking changes. This is a work in progress and needs significant polishing before it's ready for production use.
 
-**URL**: https://lovable.dev/projects/1509186e-f40c-45bd-936e-eb663446f1fd
+An AI-powered spreadsheet application that combines the familiarity of traditional spreadsheets with the power of SQL and AI assistance.
 
-## How can I edit this code?
+## Features
 
-There are several ways of editing your application.
+- **Spreadsheet Interface**: Familiar grid-based UI for editing cells, managing sheets, and organizing data
+- **AI Assistant**: Chat with Claude Sonnet 4.5 or Gemini Flash to query, analyze, and manipulate your data
+- **SQL Powered**: Each sheet is backed by a SQLite table, enabling powerful SQL queries and data operations
+- **AI() SQL Function**: Process data with AI directly in SQL queries using OpenAI or Gemini
+- **Smart Highlights**: Automatically highlight cells based on conditions or values
+- **Excel Import/Export**: Import multi-sheet Excel files and export to CSV or Excel
+- **Persistent Chat History**: Conversations with the AI assistant are saved per spreadsheet
 
-**Use Lovable**
+## Tech Stack
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/1509186e-f40c-45bd-936e-eb663446f1fd) and start prompting.
+**Frontend:**
+- React 18 + TypeScript
+- Vite
+- Tailwind CSS + shadcn/ui
+- React Router
 
-Changes made via Lovable will be committed automatically to this repo.
+**Backend:**
+- Express
+- SQLite (better-sqlite3)
+- Claude Sonnet 4.5 / Gemini Flash (chat assistant)
+- OpenAI GPT-4o-mini / Gemini Flash (AI() SQL function)
 
-**Use your preferred IDE**
+## Prerequisites
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+- Node.js (v18 or higher)
+- npm
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+## Setup
 
-Follow these steps:
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd cello
+   ```
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+3. **Configure environment variables**
 
-# Step 3: Install the necessary dependencies.
-npm i
+   Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+   Add your API keys to `.env`:
+   ```env
+   # For AI chat assistant (choose one)
+   ANTHROPIC_API_KEY=your_key_here
+   # or
+   GEMINI_API_KEY=your_key_here
+
+   # For AI() SQL function (choose one)
+   OPENAI_API_KEY=your_key_here
+   # or use Gemini with AI_FUNCTION_PROVIDER=gemini
+   ```
+
+4. **Start the development servers**
+
+   You need to run **two servers in parallel**:
+
+   ```bash
+   # Terminal 1: Start the backend API with auto-reload
+   npm run server:watch
+
+   # Terminal 2: Start the frontend dev server
+   npm run dev
+   ```
+
+   The frontend will run on `http://localhost:8080`
+   The backend API will run on `http://localhost:4000`
+
+## Usage
+
+### Creating and Editing Spreadsheets
+
+1. Navigate to `http://localhost:8080`
+2. Click "New Spreadsheet" to create a spreadsheet
+3. Edit cells by clicking on them
+4. Add/remove sheets using the sheet tabs at the bottom
+5. Right-click column headers to rename or delete columns
+
+### Using the AI Assistant
+
+The AI assistant can help you query, analyze, and manipulate your data:
+
+1. Select cells in your spreadsheet to provide context
+2. Type your request in the chat panel on the right
+3. The assistant can:
+   - Run SQL queries to analyze data
+   - Update, insert, or delete rows
+   - Add new columns
+   - Highlight cells based on conditions
+   - Filter data
+   - Explain trends and patterns
+
+**Example prompts:**
+- "What's the average revenue by month?"
+- "Highlight all cells where revenue is above 10000"
+- "Add a new column called 'profit_margin' calculated as (revenue - cost) / revenue"
+- "Show me only rows where the status is 'active'"
+- "Delete all rows where the quantity is 0"
+
+### Using the AI() SQL Function
+
+Process data with AI directly in SQL queries:
+
+```sql
+-- Classify sentiment
+SELECT AI('Classify sentiment: ' || review) FROM reviews
+
+-- Boolean checks
+SELECT AI('Is this spam?', 'boolean') FROM messages
+
+-- Categorize with enums
+SELECT AI('Categorize: ' || text, '["urgent","normal","low"]') FROM tasks
 ```
 
-## Backend configuration
+Ask the AI assistant to run these queries for you.
 
-By default the app talks to a local SQLite database exposed through a lightweight Node API.
+## Architecture
 
-1. Start the API: `npm run server` (or `npm run server:watch` for automatic restarts when files or `.env` change). It listens on `http://localhost:4000` by default.
-2. In another terminal, run the UI: `npm run dev`.
+### Data Model
 
-To point the UI at a different API origin, set `VITE_SQLITE_API_URL` in `.env`.
+- **Spreadsheets**: Top-level container
+- **Sheets**: Individual tabs within a spreadsheet
+- **Columns**: Headers and metadata tracked in `sheet_columns`
+- **Rows**: Stored in per-sheet tables (`sheet_<sheet_id>`)
 
-If you want to use Supabase (and regain AI chat), set `VITE_USE_SUPABASE=true` instead and skip the local server.
+Row 0 is reserved for headers. Data rows start at row 1.
 
-Each sheet is materialized as its own SQLite table (`sheet_<sheet_id>`). Column names track the spreadsheet headers, so SQL (and the AI agent) can reference meaningful column identifiers like `revenue` instead of generic column numbers.
+### AI Integration
 
-- Columns can be removed from the UI, which maps to dropping the corresponding column from the sheet table. (This capability is only available while using the local SQLite backend.)
-- To enable the local Gemini-powered assistant, add `GEMINI_API_KEY=<your key>` to `.env` and restart `npm run server`. The UI will call the local API, which proxies requests to Gemini Flash.
+**Chat Assistant** (Claude Sonnet 4.5 / Gemini Flash)
+- Provides conversational interface for data operations
+- Can execute SQL, manipulate data, and provide insights
+- Supports tools: `executeSheetSql`, `mutateSheetSql`, `deleteRows`, `highlights_add`, `highlights_clear`, `filter_add`, `filter_clear`
+- Conversations are persisted per spreadsheet
 
-**Edit a file directly in GitHub**
+**AI() Function** (OpenAI GPT-4o-mini / Gemini Flash)
+- Processes data using AI within SQL queries
+- Supports boolean and enum schemas for structured outputs
+- Ideal for classification, sentiment analysis, and categorization tasks
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+### Database
 
-**Use GitHub Codespaces**
+All data is stored in `data/app.db` (SQLite). To reset all state, delete this file.
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+Schema operations (adding/removing columns) modify the actual SQL schema, not just metadata.
 
-## What technologies are used for this project?
+## Configuration
 
-This project is built with:
+### Environment Variables
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VITE_SQLITE_API_URL` | Backend API URL | `http://localhost:4000` |
+| `AI_PROVIDER` | Chat assistant provider (`anthropic` or `gemini`) | `anthropic` |
+| `ANTHROPIC_API_KEY` | API key for Claude Sonnet 4.5 | - |
+| `GEMINI_API_KEY` | API key for Gemini Flash | - |
+| `AI_FUNCTION_PROVIDER` | AI() function provider (`openai` or `gemini`) | `openai` |
+| `AI_FUNCTION_MODEL` | Override default model for AI() function | `gpt-4o-mini` |
+| `OPENAI_API_KEY` | API key for OpenAI | - |
 
-## How can I deploy this project?
+### Recommended Configuration
 
-Simply open [Lovable](https://lovable.dev/projects/1509186e-f40c-45bd-936e-eb663446f1fd) and click on Share -> Publish.
+For the best experience:
+- **Chat Assistant**: Use Claude Sonnet 4.5 (`AI_PROVIDER=anthropic`)
+  - More reliable tool calling
+  - Better autonomous error recovery
+  - Automatically layers highlights
 
-## Can I connect a custom domain to my Lovable project?
+- **AI() Function**: Use OpenAI GPT-4o-mini (`AI_FUNCTION_PROVIDER=openai`)
+  - Extremely cost-effective (15¢ per 1M input tokens)
+  - Fast and reliable for bulk data processing
 
-Yes, you can!
+## Development
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+### Available Scripts
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+```bash
+npm run dev           # Start frontend dev server
+npm run server        # Run backend API once
+npm run server:watch  # Run backend with auto-reload
+npm run build         # Production build
+npm run build:dev     # Development build
+npm run lint          # Run ESLint
+```
+
+### Project Structure
+
+```
+server/
+  index.mjs                    # Express API + SQLite operations
+
+src/
+  integrations/
+    database/                  # Data client abstraction
+      sqliteClient.ts          # API client for local backend
+      types.ts                 # Type definitions
+  pages/
+    SpreadsheetView.tsx        # Main spreadsheet editor
+    SpreadsheetsList.tsx       # Spreadsheet list page
+  components/
+    SpreadsheetGrid.tsx        # Cell grid component
+    ChatPanel.tsx              # AI assistant UI
+    SheetTabs.tsx              # Sheet switcher
+  hooks/
+    useSpreadsheetSync.ts      # Cell synchronization logic
+```
+
+### Adding a New API Route
+
+1. Add route handler in `server/index.mjs`
+2. Update `src/integrations/database/sqliteClient.ts` to call it
+3. Add types in `src/integrations/database/types.ts`
+4. Restart `npm run server:watch`
+
+## Debugging
+
+### Chat Assistant Logs
+
+Logs are written to `data/logs/`:
+- `anthropic-*.log` - Claude Sonnet 4.5 requests/responses
+- `gemini-*.log` - Gemini Flash requests/responses
+
+### AI() Function Logs
+
+Logs are written to `data/logs/ai-function-*.log`
+
+### Inspecting the Database
+
+```bash
+sqlite3 data/app.db
+
+# List all tables
+.tables
+
+# View spreadsheets
+SELECT * FROM spreadsheets;
+
+# View a sheet's data
+SELECT * FROM sheet_<sheet_id>;
+```
+
+## Known Limitations
+
+- No undo/redo functionality
+- No collaborative editing
+- No cell formatting (colors, fonts, etc.)
+- No formulas (use SQL queries with the AI assistant instead)
+- Highlights are client-side only and cleared on page refresh
+- No automated tests
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions are welcome! Please open an issue or pull request if you'd like to help improve Cello.

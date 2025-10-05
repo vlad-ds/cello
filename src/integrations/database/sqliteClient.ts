@@ -1,4 +1,3 @@
-import { backendConfig } from '@/config/backend';
 import type {
   ChatMessage,
   ChatStreamEvent,
@@ -10,7 +9,7 @@ import type {
   SpreadsheetRecord,
 } from './types';
 
-const BASE_URL = backendConfig.sqliteApiBaseUrl.replace(/\/$/, '');
+const BASE_URL = (import.meta.env.VITE_SQLITE_API_URL || 'http://localhost:4000').replace(/\/$/, '');
 
 type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
